@@ -209,7 +209,10 @@ case "$MODE" in
     else
       MESSAGE="squash snapshot of $PREFIX at $SOURCE_SHORT"
     fi
-    RELEASE=$(git commit-tree "$TREE" "${PARENT_ARGS[@]}" -m "$MESSAGE") || die 'could not create squashed commit'
+    # ${arr[@]+"${arr[@]}"} keeps the empty-parent case working under bash 3.2
+    # (stock macOS), which treats "${arr[@]}" as unbound under `set -u`.
+    RELEASE=$(git commit-tree "$TREE" ${PARENT_ARGS[@]+"${PARENT_ARGS[@]}"} -m "$MESSAGE") ||
+      die 'could not create squashed commit'
     printf 'Pushing one squashed snapshot (%s) to %s:%s...\n' "$RELEASE" "$REMOTE" "$BRANCH"
     push_refspec "$RELEASE"
     ;;
