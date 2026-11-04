@@ -23,7 +23,9 @@ publisher.
 
 Identity options (`--identity` / `--author` / `--committer`) are covered for
 `keep`, `current` and `fixed` values, shorthand conflicts and environment
-isolation.
+isolation. Date options (`--dates` / `--author-date` / `--committer-date`) are
+covered for `keep`, `current`, `fixed` and `evenly` values, including the
+"rebuilds need -f" hint for non-deterministic modes.
 
 Run a subset while iterating:
 

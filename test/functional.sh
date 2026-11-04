@@ -271,6 +271,200 @@ test_identity_ignores_environment() {
     "$(git --git-dir="$remote" show -s --format="$fields" main)"
 }
 
+test_dates_default_to_keep() {
+  local w repo remote fields
+  w=$(new_tmp dates-keep); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+  fields='%aI|%cI'
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2001-02-03T04:05:06+08:00' \
+  GIT_COMMITTER_DATE='2002-03-04T05:06:07+08:00' \
+    git -C "$repo" commit -qm c1
+  git -C "$repo" tag v1
+
+  printf 'two\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2003-04-05T06:07:08+08:00' \
+  GIT_COMMITTER_DATE='2004-05-06T07:08:09+08:00' \
+    git -C "$repo" commit -qm c2
+  git -C "$repo" tag v2
+
+  tool_ok 'squash keeps the HEAD dates' "$repo" --prefix=pkg --squash "$remote" keep
+  assert_eq 'squash keeps author and committer dates' \
+    '2003-04-05T06:07:08+08:00|2004-05-06T07:08:09+08:00' \
+    "$(git --git-dir="$remote" show -s --format="$fields" keep)"
+
+  tool_ok 'squash-tags keeps per-tag dates' \
+    "$repo" --prefix=pkg --squash-tags "$remote" tags
+  assert_eq 'newest tag keeps its dates' \
+    '2003-04-05T06:07:08+08:00|2004-05-06T07:08:09+08:00' \
+    "$(git --git-dir="$remote" show -s --format="$fields" tags)"
+  assert_eq 'older tag keeps its dates' \
+    '2001-02-03T04:05:06+08:00|2002-03-04T05:06:07+08:00' \
+    "$(git --git-dir="$remote" show -s --format="$fields" tags^)"
+}
+
+test_dates_fixed_and_current() {
+  local w repo remote before after epoch
+  w=$(new_tmp dates-fixed); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2001-02-03T04:05:06+08:00' \
+  GIT_COMMITTER_DATE='2002-03-04T05:06:07+08:00' \
+    git -C "$repo" commit -qm c1
+
+  tool_ok 'fixed committer date' "$repo" --prefix=pkg --squash \
+    --committer-date='2020-01-01T00:00:00+08:00' "$remote" fixed
+  assert_eq 'fixed date is exact' '1577808000' \
+    "$(git --git-dir="$remote" show -s --format=%ct fixed)"
+  assert_eq 'fixed date keeps its offset' '2020-01-01T00:00:00+08:00' \
+    "$(git --git-dir="$remote" show -s --format=%cI fixed)"
+  assert_eq 'the author date is untouched' '2001-02-03T04:05:06+08:00' \
+    "$(git --git-dir="$remote" show -s --format=%aI fixed)"
+
+  before=$(date +%s)
+  tool_ok 'current dates for both sides' "$repo" --prefix=pkg --squash \
+    --dates=current "$remote" now
+  after=$(date +%s)
+  assert_eq 'author and committer share the run timestamp' \
+    "$(git --git-dir="$remote" show -s --format=%at now)" \
+    "$(git --git-dir="$remote" show -s --format=%ct now)"
+  epoch=$(git --git-dir="$remote" show -s --format=%ct now)
+  (( epoch >= before && epoch <= after )) ||
+    fail "current date $epoch is outside the run window $before..$after"
+}
+
+test_dates_evenly() {
+  local w repo remote expected oldest
+  w=$(new_tmp dates-evenly); repo=$w/repo
+  remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"; init_remote "$w/one.git"
+
+  mkdir -p "$repo/pkg"
+  local i=1
+  while (( i <= 4 )); do
+    printf 'line %d\n' "$i" >>"$repo/pkg/data.txt"
+    commit_all "$repo" "c$i"
+    git -C "$repo" tag "v$i"
+    i=$((i + 1))
+  done
+
+  tool_ok 'evenly spread committer dates' "$repo" --prefix=pkg --squash-tags \
+    --committer-date='evenly,2020-01-01T00:00:00+08:00,2020-01-04T00:00:00+08:00' \
+    "$remote" main
+  expected=$(printf '1577808000\n1577894400\n1577980800\n1578067200')
+  assert_eq 'endpoints included, steps equal' "$expected" \
+    "$(git --git-dir="$remote" log --reverse --format=%ct main)"
+  oldest=$(git --git-dir="$remote" rev-parse main~3)
+  assert_eq 'evenly keeps the START offset' '2020-01-01T00:00:00+08:00' \
+    "$(git --git-dir="$remote" show -s --format=%cI "$oldest")"
+  assert_eq 'evenly leaves author dates alone' \
+    "$(git -C "$repo" show -s --format=%aI v1)" \
+    "$(git --git-dir="$remote" show -s --format=%aI "$oldest")"
+
+  init_remote "$w/two.git"
+  tool_ok 'evenly is reproducible' "$repo" --prefix=pkg --squash-tags \
+    --committer-date='evenly,2020-01-01T00:00:00+08:00,2020-01-04T00:00:00+08:00' \
+    "$w/two.git" main
+  assert_eq 'evenly chain is reproducible across remotes' \
+    "$(remote_rev "$remote" main)" "$(remote_rev "$w/two.git" main)"
+
+  tool_ok 'single commit uses START' "$repo" --prefix=pkg --squash \
+    --dates='evenly,2020-01-01T00:00:00+08:00,2020-01-04T00:00:00+08:00' \
+    "$w/one.git" main
+  assert_eq 'single commit uses START for both dates' '1577808000|1577808000' \
+    "$(git --git-dir="$w/one.git" show -s --format='%at|%ct' main)"
+}
+
+test_dates_shorthand_and_validation() {
+  local w repo remote
+  w=$(new_tmp dates-validation); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  commit_all "$repo" c1
+
+  tool_fails '--dates with --author-date' "$repo" --prefix=pkg --squash \
+    --dates=keep --author-date=keep "$remote" bad
+  assert_contains 'date conflict is reported' "$TOOL_OUTPUT" 'cannot be combined'
+  tool_fails '--committer-date with --dates' "$repo" --prefix=pkg --squash \
+    --committer-date=keep --dates=keep "$remote" bad
+  assert_contains 'date conflict is reported in any order' "$TOOL_OUTPUT" 'cannot be combined'
+
+  tool_fails 'date without a time' "$repo" --prefix=pkg --squash \
+    --committer-date='2020-01-01' "$remote" bad
+  assert_contains 'short date is reported' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'date without a timezone' "$repo" --prefix=pkg --squash \
+    --committer-date='2020-01-01T00:00:00' "$remote" bad
+  assert_contains 'missing timezone is reported' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'relative dates are rejected' "$repo" --prefix=pkg --squash \
+    --committer-date='2 weeks ago' "$remote" bad
+  assert_contains 'relative date is reported' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'evenly without an end date' "$repo" --prefix=pkg --squash \
+    --committer-date='evenly,2020-01-01T00:00:00+08:00' "$remote" bad
+  assert_contains 'evenly arity is reported' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'evenly with three dates' "$repo" --prefix=pkg --squash \
+    --committer-date='evenly,2020-01-01T00:00:00+08:00,2020-01-02T00:00:00+08:00,2020-01-03T00:00:00+08:00' \
+    "$remote" bad
+  assert_contains 'evenly arity is reported twice' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'duplicate --dates' "$repo" --prefix=pkg --squash \
+    --dates=keep --dates=current "$remote" bad
+  assert_contains 'duplicate date option is reported' "$TOOL_OUTPUT" 'more than once'
+  tool_fails 'date option in normal mode' "$repo" --prefix=pkg \
+    --dates=keep "$remote" main
+  assert_contains 'normal mode rejects date options' "$TOOL_OUTPUT" 'only apply to --squash'
+}
+
+test_squash_tags_nondeterministic_dates_need_force() {
+  local w repo remote
+  w=$(new_tmp dates-force); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2001-01-01T00:00:00+08:00' \
+  GIT_COMMITTER_DATE='2001-01-01T00:00:00+08:00' \
+    git -C "$repo" commit -qm c1
+  git -C "$repo" tag v1
+  printf 'two\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2002-01-01T00:00:00+08:00' \
+  GIT_COMMITTER_DATE='2002-01-01T00:00:00+08:00' \
+    git -C "$repo" commit -qm c2
+  git -C "$repo" tag v2
+
+  tool_ok 'initial publish' "$repo" --prefix=pkg --squash-tags "$remote" main
+
+  tool_fails 'current dates cannot match the published chain' \
+    "$repo" --prefix=pkg --squash-tags --committer-date=current "$remote" main
+  assert_contains 'hint mentions the current-date cause' "$TOOL_OUTPUT" 'current dates change on every run'
+  assert_contains 'hint mentions -f' "$TOOL_OUTPUT" 'use -f'
+  tool_ok 'force rebuild with current dates' \
+    "$repo" --prefix=pkg --squash-tags --committer-date=current -f "$remote" main
+  assert_eq 'force rebuild publishes every tag' '2' \
+    "$(git --git-dir="$remote" rev-list --count main)"
+
+  printf 'three\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2003-01-01T00:00:00+08:00' \
+  GIT_COMMITTER_DATE='2003-01-01T00:00:00+08:00' \
+    git -C "$repo" commit -qm c3
+  git -C "$repo" tag v3
+  tool_fails 'evenly needs a rebuild when the tag set changes' \
+    "$repo" --prefix=pkg --squash-tags \
+    --committer-date='evenly,2020-01-01T00:00:00+08:00,2020-01-03T00:00:00+08:00' \
+    "$remote" main
+  assert_contains 'hint mentions evenly' "$TOOL_OUTPUT" 'evenly dates are re-spread'
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -351,7 +545,12 @@ test_squash_tags_publishes_one_commit_per_tag() {
   mkdir -p "$repo/pkg"
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag v2
-  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v3
+  printf 'three\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2003-01-01T00:00:00+08:00' \
+  GIT_COMMITTER_DATE='2003-01-01T00:00:00+08:00' \
+    git -C "$repo" commit -qm c3
+  git -C "$repo" tag v3
   d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 v1)
   d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 v2)
   d3=$(git -C "$repo" describe --tags --always --long --abbrev=7 v3)
@@ -418,7 +617,12 @@ test_squash_tags_rejects_moved_tags() {
   mkdir -p "$repo/pkg"
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag v2
-  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v3
+  printf 'three\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_DATE='2003-01-01T00:00:00+08:00' \
+  GIT_COMMITTER_DATE='2003-01-01T00:00:00+08:00' \
+    git -C "$repo" commit -qm c3
+  git -C "$repo" tag v3
 
   tool_ok 'initial publish' "$repo" --prefix=pkg --squash-tags "$remote" main
   old_tip=$(remote_rev "$remote" main)
@@ -592,6 +796,11 @@ run_case test_identity_current_and_fixed
 run_case test_identity_shorthand_and_conflicts
 run_case test_identity_validation
 run_case test_identity_ignores_environment
+run_case test_dates_default_to_keep
+run_case test_dates_fixed_and_current
+run_case test_dates_evenly
+run_case test_dates_shorthand_and_validation
+run_case test_squash_tags_nondeterministic_dates_need_force
 run_case test_dirty_worktree_is_refused
 run_case test_prefix_validation
 run_case test_branch_validation
