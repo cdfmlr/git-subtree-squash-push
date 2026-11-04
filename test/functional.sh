@@ -465,6 +465,15 @@ test_squash_tags_nondeterministic_dates_need_force() {
   assert_contains 'hint mentions evenly' "$TOOL_OUTPUT" 'evenly dates are re-spread'
 }
 
+test_help_text_is_literal() {
+  local dir out
+  dir=$(mktemp -d "$TEST_TMP_ROOT/help.XXXXXX")
+  out=$(cd "$dir" && "$TOOL" --help 2>&1) || fail "--help must succeed outside a repository: $out"
+  assert_contains 'help is not empty' "$out" 'Usage:'
+  assert_contains 'help shows the naming command literally' "$out" \
+    'named with `git describe --tags --always --long --abbrev=7`'
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -804,6 +813,7 @@ run_case test_squash_tags_nondeterministic_dates_need_force
 run_case test_dirty_worktree_is_refused
 run_case test_prefix_validation
 run_case test_branch_validation
+run_case test_help_text_is_literal
 run_case test_squash_tags_publishes_one_commit_per_tag
 run_case test_squash_tags_handles_annotated_and_duplicate_tags
 run_case test_squash_tags_rejects_moved_tags

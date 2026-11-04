@@ -80,7 +80,7 @@ Date SPEC:
 
 ISO8601 requires a timezone: YYYY-MM-DD[T ]HH:MM:SS(+|-)HH:MM or ...Z.
 Without --squash or --squash-tags, history is not squashed.
-Squashed commits are named with `git describe --tags --always --long --abbrev=7`.
+Squashed commits are named with \`git describe --tags --always --long --abbrev=7\`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
 --identity conflicts with --author/--committer, and --dates conflicts with
 --author-date/--committer-date. These options only apply to --squash and
