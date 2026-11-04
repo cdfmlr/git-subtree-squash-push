@@ -131,6 +131,146 @@ test_commit_messages_use_git_describe() {
   assert_eq 'hash part is 7 characters' '7' "${#hash}"
 }
 
+test_identity_defaults_to_keep() {
+  local w repo remote fields
+  w=$(new_tmp identity-keep); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+  fields='%an|%ae|%cn|%ce'
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_NAME='A U Thor' GIT_AUTHOR_EMAIL='author@example.com' \
+  GIT_COMMITTER_NAME='C O Mitter' GIT_COMMITTER_EMAIL='committer@example.com' \
+    git -C "$repo" commit -qm c1
+  git -C "$repo" tag v1
+
+  printf 'two\n' >>"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_NAME='Second Author' GIT_AUTHOR_EMAIL='second@example.com' \
+  GIT_COMMITTER_NAME='Second Committer' GIT_COMMITTER_EMAIL='second-committer@example.com' \
+    git -C "$repo" commit -qm c2
+  git -C "$repo" tag v2
+
+  tool_ok 'squash keeps the HEAD identity' "$repo" --prefix=pkg --squash "$remote" keep
+  assert_eq 'squash keeps the HEAD identity' \
+    'Second Author|second@example.com|Second Committer|second-committer@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" keep)"
+
+  tool_ok 'squash-tags keeps per-tag identities' \
+    "$repo" --prefix=pkg --squash-tags "$remote" tags
+  assert_eq 'newest tag keeps its identity' \
+    'Second Author|second@example.com|Second Committer|second-committer@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" tags)"
+  assert_eq 'older tag keeps its identity' \
+    'A U Thor|author@example.com|C O Mitter|committer@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" tags^)"
+}
+
+test_identity_current_and_fixed() {
+  local w repo remote fields
+  w=$(new_tmp identity-current); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+  fields='%an|%ae|%cn|%ce'
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  commit_all "$repo" c1
+
+  tool_ok 'current author with fixed committer' "$repo" --prefix=pkg --squash \
+    --author=current --committer='Publish Bot <bot@example.com>' "$remote" main
+  assert_eq 'current uses the configured git user, fixed uses the given one' \
+    'Test Author|test@example.com|Publish Bot|bot@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" main)"
+
+  tool_ok 'fixed, prefix is optional' "$repo" --prefix=pkg --squash \
+    --committer='fixed,Other Bot <other@example.com>' "$remote" prefixed
+  assert_eq 'fixed, prefix is accepted' 'Other Bot' \
+    "$(git --git-dir="$remote" show -s --format=%cn prefixed)"
+}
+
+test_identity_shorthand_and_conflicts() {
+  local w repo remote other fields
+  w=$(new_tmp identity-shorthand); repo=$w/repo
+  remote=$w/remote.git; other=$w/other.git
+  init_repo "$repo"; init_remote "$remote"; init_remote "$other"
+  fields='%an|%ae|%cn|%ce'
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  commit_all "$repo" c1
+
+  tool_ok 'identity shorthand' "$repo" --prefix=pkg --squash \
+    --identity='Both Bot <both@example.com>' "$remote" main
+  tool_ok 'explicit author and committer' "$repo" --prefix=pkg --squash \
+    --author='Both Bot <both@example.com>' \
+    --committer='Both Bot <both@example.com>' "$other" main
+  assert_eq 'shorthand sets both identities' \
+    'Both Bot|both@example.com|Both Bot|both@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" main)"
+  assert_eq 'shorthand matches the explicit flags' \
+    "$(remote_rev "$other" main)" "$(remote_rev "$remote" main)"
+
+  tool_fails '--identity with --author' "$repo" --prefix=pkg --squash \
+    --identity='X <x@example.com>' --author=keep "$remote" bad
+  assert_contains 'conflict is reported' "$TOOL_OUTPUT" 'cannot be combined'
+  tool_fails '--author with --identity' "$repo" --prefix=pkg --squash \
+    --author=keep --identity='X <x@example.com>' "$remote" bad
+  assert_contains 'conflict is reported in any order' "$TOOL_OUTPUT" 'cannot be combined'
+  tool_fails '--identity with --committer' "$repo" --prefix=pkg --squash \
+    --committer=keep --identity='X <x@example.com>' "$remote" bad
+  assert_contains 'committer conflict is reported' "$TOOL_OUTPUT" 'cannot be combined'
+  tool_fails 'duplicate --author' "$repo" --prefix=pkg --squash \
+    --author=keep --author=current "$remote" bad
+  assert_contains 'duplicate option is reported' "$TOOL_OUTPUT" 'more than once'
+}
+
+test_identity_validation() {
+  local w repo remote
+  w=$(new_tmp identity-invalid); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  commit_all "$repo" c1
+
+  tool_fails 'identity without an email' "$repo" --prefix=pkg --squash \
+    --author='No Email' "$remote" main
+  assert_contains 'bad author is reported' "$TOOL_OUTPUT" 'invalid author identity'
+  tool_fails 'committer with an empty name' "$repo" --prefix=pkg --squash \
+    --committer=' <only@example.com>' "$remote" main
+  assert_contains 'bad committer is reported' "$TOOL_OUTPUT" 'invalid committer identity'
+  tool_fails 'identity option without a value' "$repo" --prefix=pkg --squash --author
+  assert_contains 'missing value is reported' "$TOOL_OUTPUT" 'requires a value'
+  tool_fails 'identity in normal mode' "$repo" --prefix=pkg \
+    --identity='X <x@example.com>' "$remote" main
+  assert_contains 'normal mode rejects identity options' "$TOOL_OUTPUT" 'only apply to --squash'
+}
+
+test_identity_ignores_environment() {
+  local w repo remote fields
+  w=$(new_tmp identity-env); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+  fields='%an|%ae|%cn|%ce'
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"
+  git -C "$repo" add -A
+  GIT_AUTHOR_NAME='A U Thor' GIT_AUTHOR_EMAIL='author@example.com' \
+  GIT_COMMITTER_NAME='C O Mitter' GIT_COMMITTER_EMAIL='committer@example.com' \
+    git -C "$repo" commit -qm c1
+
+  TOOL_OUTPUT=$(cd "$repo" && GIT_AUTHOR_NAME='Env Author' \
+    GIT_AUTHOR_EMAIL='env-author@example.com' \
+    GIT_COMMITTER_NAME='Env Committer' \
+    GIT_COMMITTER_EMAIL='env-committer@example.com' \
+    "$TOOL" --prefix=pkg --squash "$remote" main 2>&1) ||
+    fail "identity options must ignore GIT_*_NAME/EMAIL: $TOOL_OUTPUT"
+  assert_eq 'environment identity does not leak' \
+    'A U Thor|author@example.com|C O Mitter|committer@example.com' \
+    "$(git --git-dir="$remote" show -s --format="$fields" main)"
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -447,6 +587,11 @@ run_case test_normal_mode_root
 run_case test_normal_mode_subtree
 run_case test_squash_mode
 run_case test_commit_messages_use_git_describe
+run_case test_identity_defaults_to_keep
+run_case test_identity_current_and_fixed
+run_case test_identity_shorthand_and_conflicts
+run_case test_identity_validation
+run_case test_identity_ignores_environment
 run_case test_dirty_worktree_is_refused
 run_case test_prefix_validation
 run_case test_branch_validation

@@ -12,6 +12,9 @@
 # therefore the synthetic commit id) stable across clones with different object
 # counts.
 #
+# Generated commits copy the source commit's author and committer by default;
+# --author, --committer and --identity override that.
+#
 # -f rebuilds squashed history from scratch and force-updates the destination
 # branch (using --force-with-lease). In normal mode, it force-updates the
 # branch with the current root/subtree history.
@@ -22,6 +25,12 @@ PROGRAM=${0##*/}
 MODE=normal
 PREFIX=''
 FORCE=0
+AUTHOR_SPEC=keep
+COMMITTER_SPEC=keep
+IDENTITY_SPEC=''
+AUTHOR_SET=0
+COMMITTER_SET=0
+IDENTITY_SET=0
 
 usage() {
   cat <<USAGE
@@ -37,13 +46,24 @@ Options:
   --squash        Publish the current snapshot as one commit
   --squash-tags   Publish one snapshot commit per reachable tag, in
                   first-parent history order
+  --identity=SPEC Set the author and committer identity (default: keep)
+  --author=SPEC   Set the author identity (default: keep)
+  --committer=SPEC
+                  Set the committer identity (default: keep)
   -f, --force     Rebuild squashed history from scratch and force-update the
                   remote branch; in normal mode, force-update the branch
   -h, --help      Show this help
 
+Identity SPEC:
+  keep                 reuse the source commit's author/committer (default)
+  current              use the current git user (user.name / user.email)
+  [fixed,]NAME <EMAIL> use the given identity; "fixed," is optional
+
 Without --squash or --squash-tags, history is not squashed.
 Squashed commits are named with `git describe --tags --always --long --abbrev=7`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
+--identity conflicts with --author/--committer. Identity options only apply to
+--squash and --squash-tags.
 USAGE
 }
 
@@ -52,7 +72,104 @@ die() {
   exit 1
 }
 
+# Parse an identity spec. On success sets IDENT_KIND (keep|current|fixed) and,
+# for fixed, IDENT_NAME / IDENT_EMAIL.
+parse_identity_spec() { # spec
+  local spec=$1
+  local re='^(.+) <([^<>[:space:]]+)>$'
+  IDENT_KIND=''
+  IDENT_NAME=''
+  IDENT_EMAIL=''
+  case $spec in
+    keep|current)
+      IDENT_KIND=$spec
+      return 0
+      ;;
+    fixed,*)
+      spec=${spec#fixed,}
+      ;;
+  esac
+  [[ $spec != *$'\n'* && $spec != *$'\r'* ]] || return 1
+  [[ $spec =~ $re ]] || return 1
+  IDENT_KIND=fixed
+  IDENT_NAME=${BASH_REMATCH[1]}
+  IDENT_EMAIL=${BASH_REMATCH[2]}
+}
+
+# Read the author and committer metadata of a commit in one git call. The
+# format ends with %x00 so that the last field is terminated too; without it
+# `read -d ""` cannot read the final field.
+read_source_meta() { # commit
+  SRC_AN=''; SRC_AE=''; SRC_AD=''; SRC_CN=''; SRC_CE=''; SRC_CD=''
+  { IFS= read -r -d '' SRC_AN
+    IFS= read -r -d '' SRC_AE
+    IFS= read -r -d '' SRC_AD
+    IFS= read -r -d '' SRC_CN
+    IFS= read -r -d '' SRC_CE
+    IFS= read -r -d '' SRC_CD
+  } < <(git show -s --format='%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00' "$1") ||
+    die "cannot read commit metadata: $1"
+}
+
+# Resolve the author/committer metadata for the commit generated from $1.
+# source_dates=1 keeps the source commit dates (--squash-tags), 0 uses the
+# current time (--squash).
+resolve_metadata() { # commit index total source_dates
+  local commit=$1 source_dates=$4
+  if [[ $AUTHOR_KIND == keep || $COMMITTER_KIND == keep ]] || ((source_dates)); then
+    read_source_meta "$commit"
+  fi
+  case $AUTHOR_KIND in
+    keep) META_AN=$SRC_AN; META_AE=$SRC_AE ;;
+    current) META_AN=$CUR_NAME; META_AE=$CUR_EMAIL ;;
+    *) META_AN=$AUTHOR_FIXED_NAME; META_AE=$AUTHOR_FIXED_EMAIL ;;
+  esac
+  case $COMMITTER_KIND in
+    keep) META_CN=$SRC_CN; META_CE=$SRC_CE ;;
+    current) META_CN=$CUR_NAME; META_CE=$CUR_EMAIL ;;
+    *) META_CN=$COMMITTER_FIXED_NAME; META_CE=$COMMITTER_FIXED_EMAIL ;;
+  esac
+  if ((source_dates)); then
+    META_AD=$SRC_CD
+    META_CD=$SRC_CD
+  else
+    META_AD=$NOW_DATE
+    META_CD=$NOW_DATE
+  fi
+}
+
+# Create a commit with the resolved metadata. All six GIT_* variables are set
+# explicitly so the ambient environment cannot leak into generated commits.
+create_commit() { # tree message; uses META_* and PARENT_ARGS
+  GIT_AUTHOR_NAME="$META_AN" GIT_AUTHOR_EMAIL="$META_AE" GIT_AUTHOR_DATE="$META_AD" \
+    GIT_COMMITTER_NAME="$META_CN" GIT_COMMITTER_EMAIL="$META_CE" \
+    GIT_COMMITTER_DATE="$META_CD" \
+    git -c commit.gpgsign=false commit-tree "$1" \
+      ${PARENT_ARGS[@]+"${PARENT_ARGS[@]}"} -m "$2"
+}
+
+# Resolve values that are shared by every generated commit in this run.
+prepare_metadata() {
+  CUR_NAME=''
+  CUR_EMAIL=''
+  if [[ $AUTHOR_KIND == current || $COMMITTER_KIND == current ]]; then
+    CUR_NAME=$(git config user.name) || die "identity 'current' needs user.name to be set"
+    CUR_EMAIL=$(git config user.email) || die "identity 'current' needs user.email to be set"
+    [[ -n $CUR_NAME && -n $CUR_EMAIL ]] ||
+      die "identity 'current' needs a non-empty user.name and user.email"
+  fi
+  local now
+  now=$(date '+%s %z') || die 'cannot read the current time'
+  NOW_DATE="@${now% *} ${now#* }"
+}
+
 while (($#)); do
+  case "$1" in
+    --author|--committer|--identity)
+      (($# >= 2)) || die "$1 requires a value"
+      set -- "$1=$2" "${@:3}"
+      ;;
+  esac
   case "$1" in
     --prefix=*)
       [[ -z "$PREFIX" ]] || die '--prefix was specified more than once'
@@ -73,6 +190,24 @@ while (($#)); do
     --squash-tags)
       [[ "$MODE" == normal ]] || die '--squash and --squash-tags are mutually exclusive'
       MODE=squash-tags
+      shift
+      ;;
+    --identity=*)
+      ((IDENTITY_SET == 0)) || die '--identity was specified more than once'
+      IDENTITY_SET=1
+      IDENTITY_SPEC=${1#--identity=}
+      shift
+      ;;
+    --author=*)
+      ((AUTHOR_SET == 0)) || die '--author was specified more than once'
+      AUTHOR_SET=1
+      AUTHOR_SPEC=${1#--author=}
+      shift
+      ;;
+    --committer=*)
+      ((COMMITTER_SET == 0)) || die '--committer was specified more than once'
+      COMMITTER_SET=1
+      COMMITTER_SPEC=${1#--committer=}
       shift
       ;;
     -f|--force)
@@ -106,6 +241,25 @@ BRANCH=$2
 # refs/heads/refs/heads/... instead of the branch the user meant.
 [[ "$BRANCH" != refs/* ]] || die "BRANCH must be a branch name, not a ref: $BRANCH"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
+
+# Expand the identity shorthands and validate the specs before touching refs.
+if ((IDENTITY_SET)); then
+  ((AUTHOR_SET == 0 && COMMITTER_SET == 0)) ||
+    die '--identity cannot be combined with --author or --committer'
+  AUTHOR_SPEC=$IDENTITY_SPEC
+  COMMITTER_SPEC=$IDENTITY_SPEC
+fi
+if [[ $MODE == normal ]] && ((IDENTITY_SET || AUTHOR_SET || COMMITTER_SET)); then
+  die '--identity/--author/--committer only apply to --squash and --squash-tags'
+fi
+parse_identity_spec "$AUTHOR_SPEC" || die "invalid author identity: $AUTHOR_SPEC"
+AUTHOR_KIND=$IDENT_KIND
+AUTHOR_FIXED_NAME=$IDENT_NAME
+AUTHOR_FIXED_EMAIL=$IDENT_EMAIL
+parse_identity_spec "$COMMITTER_SPEC" || die "invalid committer identity: $COMMITTER_SPEC"
+COMMITTER_KIND=$IDENT_KIND
+COMMITTER_FIXED_NAME=$IDENT_NAME
+COMMITTER_FIXED_EMAIL=$IDENT_EMAIL
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die 'not inside a Git working tree'
 cd "$ROOT"
@@ -185,6 +339,8 @@ push_refspec() {
   fi
 }
 
+prepare_metadata
+
 case "$MODE" in
   normal)
     if [[ "$PREFIX" == '.' ]]; then
@@ -211,10 +367,8 @@ case "$MODE" in
 
     MESSAGE=$(git describe --tags --always --long --abbrev=7 HEAD) ||
       die 'could not describe HEAD'
-    # ${arr[@]+"${arr[@]}"} keeps the empty-parent case working under bash 3.2
-    # (stock macOS), which treats "${arr[@]}" as unbound under `set -u`.
-    RELEASE=$(git commit-tree "$TREE" ${PARENT_ARGS[@]+"${PARENT_ARGS[@]}"} -m "$MESSAGE") ||
-      die 'could not create squashed commit'
+    resolve_metadata HEAD 0 1 0
+    RELEASE=$(create_commit "$TREE" "$MESSAGE") || die 'could not create squashed commit'
     printf 'Pushing one squashed snapshot (%s) to %s:%s...\n' "$RELEASE" "$REMOTE" "$BRANCH"
     push_refspec "$RELEASE"
     ;;
@@ -242,24 +396,28 @@ case "$MODE" in
 
     ((${#TAGS[@]} > 0)) || die 'no tags found on HEAD first-parent history'
 
-    # Rebuild the desired tag chain deterministically on every run. Stable
-    # synthetic identity + source-commit date make each generated commit ID
-    # reproducible. That lets us prove that the current remote tip is part of
-    # the exact chain implied by the current local tags, and detect inserted,
-    # moved, or deleted historical tags.
+    # Rebuild the desired tag chain deterministically on every run. Keeping the
+    # source commit's identity and date (the defaults) makes each generated
+    # commit ID reproducible. That lets us prove that the current remote tip is
+    # part of the exact chain implied by the current local tags, and detect
+    # inserted, moved, or deleted historical tags.
     TAG_COMMITS=()
     PARENT=''
+    TAG_INDEX=0
     for TAG in "${TAGS[@]}"; do
       TREE=$(snapshot_tree "refs/tags/$TAG")
       SOURCE_COMMIT=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
       MESSAGE=$(git describe --tags --always --long --abbrev=7 "$SOURCE_COMMIT") ||
         die "could not describe $TAG"
-      SOURCE_DATE=$(git show -s --format=%cI "$SOURCE_COMMIT")
+      resolve_metadata "$SOURCE_COMMIT" "$TAG_INDEX" "${#TAGS[@]}" 1
       if [[ -n "$PARENT" ]]; then
-        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -p "$PARENT" -m "$MESSAGE") || die "could not create release commit for tag $TAG"
+        PARENT_ARGS=(-p "$PARENT")
       else
-        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -m "$MESSAGE") || die "could not create release commit for tag $TAG"
+        PARENT_ARGS=()
       fi
+      RELEASE=$(create_commit "$TREE" "$MESSAGE") ||
+        die "could not create release commit for tag $TAG"
+      TAG_INDEX=$((TAG_INDEX + 1))
       TAG_COMMITS+=("$RELEASE")
       PARENT=$RELEASE
       printf 'Prepared tag %s (%s)\n' "$TAG" "$RELEASE"

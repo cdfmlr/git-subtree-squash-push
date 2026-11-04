@@ -21,6 +21,10 @@ commit ids across remotes and clones), argument validation, refusal to publish
 a dirty working tree, and `--force-with-lease` protection against a concurrent
 publisher.
 
+Identity options (`--identity` / `--author` / `--committer`) are covered for
+`keep`, `current` and `fixed` values, shorthand conflicts and environment
+isolation.
+
 Run a subset while iterating:
 
 ```sh
