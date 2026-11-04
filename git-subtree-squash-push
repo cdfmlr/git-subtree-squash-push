@@ -1,0 +1,269 @@
+#!/usr/bin/env bash
+# Publish a repository root or subtree to a standalone Git repository.
+#
+# Modes:
+#   (default)    Publish normal, unsquashed history.
+#   --squash     Publish one snapshot commit per invocation.
+#   --squash-tags Publish one snapshot commit per tag on HEAD's first-parent
+#                history; later invocations append only tags not yet published.
+#
+# -f rebuilds squashed history from scratch and force-updates the destination
+# branch (using --force-with-lease). In normal mode, it force-updates the
+# branch with the current root/subtree history.
+
+set -euo pipefail
+
+PROGRAM=${0##*/}
+MODE=normal
+PREFIX=''
+FORCE=0
+
+usage() {
+  cat <<USAGE
+Usage:
+  $PROGRAM --prefix=PATH [--squash | --squash-tags] [-f] REMOTE BRANCH
+
+Arguments:
+  REMOTE   Git remote name or repository URL
+  BRANCH   Destination branch name in REMOTE
+
+Options:
+  --prefix=PATH   Path relative to the repository root, or '.' for the root
+  --squash        Publish the current snapshot as one commit
+  --squash-tags   Publish one snapshot commit per reachable tag, in
+                  first-parent history order; each commit message is its tag
+  -f, --force     Rebuild squashed history from scratch and force-update the
+                  remote branch; in normal mode, force-update the branch
+  -h, --help      Show this help
+
+Without --squash or --squash-tags, history is not squashed.
+For --squash-tags, tags must be on the current HEAD's first-parent history.
+USAGE
+}
+
+die() {
+  printf '%s: error: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
+
+while (($#)); do
+  case "$1" in
+    --prefix=*)
+      [[ -z "$PREFIX" ]] || die '--prefix was specified more than once'
+      PREFIX=${1#--prefix=}
+      shift
+      ;;
+    --prefix)
+      [[ -z "$PREFIX" ]] || die '--prefix was specified more than once'
+      (($# >= 2)) || die '--prefix requires a value'
+      PREFIX=$2
+      shift 2
+      ;;
+    --squash)
+      [[ "$MODE" == normal ]] || die '--squash and --squash-tags are mutually exclusive'
+      MODE=squash
+      shift
+      ;;
+    --squash-tags)
+      [[ "$MODE" == normal ]] || die '--squash and --squash-tags are mutually exclusive'
+      MODE=squash-tags
+      shift
+      ;;
+    -f|--force)
+      FORCE=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -* )
+      die "unknown option: $1 (see --help)"
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ -n "$PREFIX" ]] || die 'required option --prefix=PATH is missing'
+(($# == 2)) || { usage >&2; exit 2; }
+REMOTE=$1
+BRANCH=$2
+[[ -n "$REMOTE" ]] || die 'REMOTE must not be empty'
+[[ -n "$BRANCH" ]] || die 'BRANCH must not be empty'
+git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
+
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die 'not inside a Git working tree'
+cd "$ROOT"
+git rev-parse --verify HEAD >/dev/null 2>&1 || die 'the repository has no commits yet'
+
+# Publishing is based only on committed content. Fail rather than silently
+# omitting staged, unstaged, or untracked files.
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  die 'working tree is not clean; commit or stash changes before publishing'
+fi
+
+# Normalize common root/subdirectory spellings. Prefixes are relative to the
+# repository root, even when this script is invoked from a nested directory.
+if [[ "$PREFIX" == '.' || "$PREFIX" == './' || -z "$PREFIX" ]]; then
+  PREFIX='.'
+else
+  PREFIX=${PREFIX#./}
+  PREFIX=${PREFIX%/}
+  [[ "$PREFIX" != /* ]] || die '--prefix must be relative to the repository root'
+  [[ "$PREFIX" != '..' && "$PREFIX" != ../* && "$PREFIX" != */../* && "$PREFIX" != */.. ]] || die '--prefix must not contain .. path components'
+  OBJECT_TYPE=$(git cat-file -t "HEAD:$PREFIX" 2>/dev/null) || die "prefix does not exist in HEAD: $PREFIX"
+  [[ "$OBJECT_TYPE" == tree ]] || die "prefix is not a directory in HEAD: $PREFIX"
+fi
+
+DEST_REF="refs/heads/$BRANCH"
+
+# Read the current destination branch, if it exists. Fetching the exact ref
+# gives us a local object to use as the parent of incremental release commits.
+REMOTE_LINE=$(git ls-remote --heads "$REMOTE" "$DEST_REF") || die "cannot access remote: $REMOTE"
+REMOTE_EXISTS=0
+REMOTE_PARENT=''
+if [[ -n "$REMOTE_LINE" ]]; then
+  REMOTE_EXISTS=1
+  git fetch --no-tags "$REMOTE" "$DEST_REF" >/dev/null || die "failed to fetch $DEST_REF from $REMOTE"
+  REMOTE_PARENT=$(git rev-parse --verify FETCH_HEAD) || die 'could not resolve fetched remote branch'
+fi
+
+# Return the tree snapshot for a commit/tag. For '.' the repository root tree
+# is already the desired snapshot. For a subdirectory, subtree split creates
+# the independent subtree history and we take its root tree.
+snapshot_tree() {
+  local revision=$1
+  local source_commit object_type split_commit
+
+  source_commit=$(git rev-parse --verify "${revision}^{commit}") || die "not a commit: $revision"
+
+  if [[ "$PREFIX" == '.' ]]; then
+    git rev-parse --verify "${source_commit}^{tree}"
+    return
+  fi
+
+  if ! git cat-file -e "$source_commit:$PREFIX" 2>/dev/null; then
+    # The directory did not exist at this tag, so its snapshot is empty.
+    git mktree </dev/null
+    return
+  fi
+
+  object_type=$(git cat-file -t "$source_commit:$PREFIX") || die "cannot inspect $PREFIX at $revision"
+  [[ "$object_type" == tree ]] || die "prefix is not a directory at $revision: $PREFIX"
+
+  split_commit=$(git subtree split --prefix="$PREFIX" "$source_commit") || die "git subtree split failed for $revision"
+  git rev-parse --verify "${split_commit}^{tree}"
+}
+
+push_refspec() {
+  local object_id=$1
+  if ((FORCE)); then
+    local lease
+    if ((REMOTE_EXISTS)); then
+      lease="$DEST_REF:$REMOTE_PARENT"
+    else
+      lease="$DEST_REF:"
+    fi
+    git push "--force-with-lease=$lease" "$REMOTE" "$object_id:$DEST_REF"
+  else
+    git push "$REMOTE" "$object_id:$DEST_REF"
+  fi
+}
+
+case "$MODE" in
+  normal)
+    if [[ "$PREFIX" == '.' ]]; then
+      EXPORT_COMMIT=$(git rev-parse HEAD)
+    else
+      EXPORT_COMMIT=$(git subtree split --prefix="$PREFIX" HEAD) || die 'git subtree split failed'
+    fi
+    printf 'Pushing %s to %s:%s without squashing...\n' "$PREFIX" "$REMOTE" "$BRANCH"
+    push_refspec "$EXPORT_COMMIT"
+    ;;
+
+  squash)
+    TREE=$(snapshot_tree HEAD)
+    if ((REMOTE_EXISTS && !FORCE)); then
+      REMOTE_TREE=$(git rev-parse --verify "${REMOTE_PARENT}^{tree}")
+      if [[ "$TREE" == "$REMOTE_TREE" ]]; then
+        printf 'Remote branch already has this snapshot; nothing to push.\n'
+        exit 0
+      fi
+      PARENT_ARGS=(-p "$REMOTE_PARENT")
+    else
+      PARENT_ARGS=()
+    fi
+
+    SOURCE_SHORT=$(git rev-parse --short HEAD)
+    if [[ "$PREFIX" == '.' ]]; then
+      MESSAGE="squash snapshot at $SOURCE_SHORT"
+    else
+      MESSAGE="squash snapshot of $PREFIX at $SOURCE_SHORT"
+    fi
+    RELEASE=$(git commit-tree "$TREE" "${PARENT_ARGS[@]}" -m "$MESSAGE") || die 'could not create squashed commit'
+    printf 'Pushing one squashed snapshot (%s) to %s:%s...\n' "$RELEASE" "$REMOTE" "$BRANCH"
+    push_refspec "$RELEASE"
+    ;;
+
+  squash-tags)
+    TAGS=()
+    while IFS= read -r commit; do
+      while IFS= read -r tag; do
+        [[ -n "$tag" ]] && TAGS+=("$tag")
+      done < <(git tag --points-at "$commit" --sort=refname)
+    done < <(git rev-list --first-parent --reverse HEAD)
+
+    ((${#TAGS[@]} > 0)) || die 'no tags found on HEAD first-parent history'
+
+    # Rebuild the desired tag chain deterministically on every run. Stable
+    # synthetic identity + source-commit date make each generated commit ID
+    # reproducible. That lets us prove that the current remote tip is part of
+    # the exact chain implied by the current local tags, and detect inserted,
+    # moved, or deleted historical tags.
+    TAG_COMMITS=()
+    PARENT=''
+    for TAG in "${TAGS[@]}"; do
+      TREE=$(snapshot_tree "refs/tags/$TAG")
+      SOURCE_COMMIT=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+      SOURCE_DATE=$(git show -s --format=%cI "$SOURCE_COMMIT")
+      if [[ -n "$PARENT" ]]; then
+        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -p "$PARENT" -m "$TAG") || die "could not create release commit for tag $TAG"
+      else
+        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -m "$TAG") || die "could not create release commit for tag $TAG"
+      fi
+      TAG_COMMITS+=("$RELEASE")
+      PARENT=$RELEASE
+      printf 'Prepared tag %s (%s)\n' "$TAG" "$RELEASE"
+    done
+
+    FIRST_INDEX=0
+    if ((REMOTE_EXISTS && !FORCE)); then
+      LAST_INDEX=-1
+      for i in "${!TAG_COMMITS[@]}"; do
+        if [[ "${TAG_COMMITS[$i]}" == "$REMOTE_PARENT" ]]; then
+          LAST_INDEX=$i
+        fi
+      done
+      ((LAST_INDEX >= 0)) || die 'remote branch is not an ancestor of the tag history generated from current local tags; use -f to rebuild and replace it'
+      FIRST_INDEX=$((LAST_INDEX + 1))
+      if ((FIRST_INDEX >= ${#TAG_COMMITS[@]})); then
+        printf 'Remote branch is already up to date with the latest local tag (%s).\n' "${TAGS[$((${#TAGS[@]} - 1))]}"
+        exit 0
+      fi
+    fi
+
+    RELEASE=${TAG_COMMITS[$((${#TAG_COMMITS[@]} - 1))]}
+    if ((REMOTE_EXISTS && !FORCE)); then
+      printf 'Pushing %d new tag snapshot(s), through %s, to %s:%s...\n' "$(( ${#TAG_COMMITS[@]} - FIRST_INDEX ))" "${TAGS[$((${#TAGS[@]} - 1))]}" "$REMOTE" "$BRANCH"
+    else
+      printf 'Pushing %d tag snapshot(s), through %s, to %s:%s...\n' "${#TAG_COMMITS[@]}" "${TAGS[$((${#TAGS[@]} - 1))]}" "$REMOTE" "$BRANCH"
+    fi
+    push_refspec "$RELEASE"
+    ;;
+esac
