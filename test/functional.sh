@@ -187,6 +187,11 @@ test_identity_current_and_fixed() {
     --committer='fixed,Other Bot <other@example.com>' "$remote" prefixed
   assert_eq 'fixed, prefix is accepted' 'Other Bot' \
     "$(git --git-dir="$remote" show -s --format=%cn prefixed)"
+
+  tool_ok 'identity with surrounding blanks' "$repo" --prefix=pkg --squash \
+    --identity='  Both Bot <both@example.com>  ' "$remote" blank
+  assert_eq 'surrounding blanks are trimmed' 'Both Bot' \
+    "$(git --git-dir="$remote" show -s --format=%an blank)"
 }
 
 test_identity_shorthand_and_conflicts() {
@@ -539,10 +544,11 @@ test_squash_tags_match_filter() {
   mkdir -p "$repo/pkg"
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag w1
-  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v2
+  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3
+  git -C "$repo" tag -a v2 -m 'release two'
 
-  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 v1)
-  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 v2)
+  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 refs/tags/v1)
+  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 refs/tags/v2)
 
   tool_ok 'publish only matching tags' "$repo" --prefix=pkg --squash-tags \
     --match='v*' "$remote" main
@@ -550,6 +556,12 @@ test_squash_tags_match_filter() {
     "$(git --git-dir="$remote" rev-list --count main)"
   assert_eq 'matching tags keep first-parent order' "$(printf '%s\n%s' "$d2" "$d1")" \
     "$(git --git-dir="$remote" log --format=%s main)"
+
+  init_remote "$w/blank.git"
+  tool_ok 'match with surrounding blanks' "$repo" --prefix=pkg --squash-tags \
+    --match='  v*  ' "$w/blank.git" main
+  assert_eq 'blank-tolerant filter selects the same tags' \
+    "$(remote_rev "$remote" main)" "$(remote_rev "$w/blank.git" main)"
 
   printf 'four\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c4; git -C "$repo" tag w2
   printf 'five\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c5; git -C "$repo" tag v3
@@ -610,6 +622,33 @@ test_squash_tags_survives_ambiguous_tag_names() {
     --match='v*' "$w/match.git" main
   assert_eq '--match sees the unambiguous short name' '2' \
     "$(git --git-dir="$w/match.git" rev-list --count main)"
+}
+
+test_no_squash_force_repairs_divergence() {
+  local w repo remote clone
+  w=$(new_tmp no-squash-force); repo=$w/repo; remote=$w/remote.git; clone=$w/clone
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
+  printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
+
+  tool_ok 'publish history' "$repo" --prefix=. --no-squash "$remote" main
+
+  git clone -q --branch main "$remote" "$clone"
+  git -C "$clone" config user.name Racer
+  git -C "$clone" config user.email racer@example.com
+  printf 'racer\n' >"$clone/extra.txt"
+  git -C "$clone" add -A
+  git -C "$clone" commit -qm 'concurrent history'
+  git -C "$clone" push -q origin main
+
+  tool_fails 'non-force update over a diverged branch' \
+    "$repo" --prefix=. --no-squash "$remote" main
+  tool_ok 'force update over a diverged branch' \
+    "$repo" --prefix=. --no-squash -f "$remote" main
+  assert_eq 'force update restores the local history' \
+    "$(git -C "$repo" rev-parse HEAD)" "$(remote_rev "$remote" main)"
 }
 
 test_dirty_worktree_is_refused() {
@@ -935,6 +974,7 @@ test_runs_under_system_bash() {
 
 info 'functional tests'
 run_case test_normal_mode_root
+run_case test_no_squash_force_repairs_divergence
 run_case test_default_mode_is_squash
 run_case test_mode_flags_are_mutually_exclusive
 run_case test_normal_mode_subtree

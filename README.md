@@ -77,7 +77,7 @@ Date specs:
 | `keep` *(default)* | The source commit's author/committer date. |
 | `current` | The current time, captured once per run. |
 | `ISO8601` | A fixed timestamp; a `fixed,` prefix is optional. |
-| `START,END` | Dates spread evenly over the generated commits, endpoints included; a single commit uses `START`. An `evenly,` prefix is optional. |
+| `START,END` | Dates spread evenly over the generated commits, endpoints included; a single commit uses `START`. `START` and `END` may be given in either order. An `evenly,` prefix is optional. |
 
 `ISO8601` needs seconds and an explicit timezone:
 `YYYY-MM-DD[T ]HH:MM:SS(+|-)HH:MM` or `...Z`. Fixed values are handed to git,
@@ -142,6 +142,8 @@ git-subtree-squash-push --prefix=packages/core --squash-tags -f ../core.git main
 - `--squash` compares the current snapshot tree with the remote tip. If they
   match it does nothing (unless `-f` is given); otherwise it commits the
   snapshot on top of the remote tip, so ordinary updates are fast-forwards.
+  Identity and date options do not change this comparison: identical content
+  stays a no-op.
 - `--squash-tags` rebuilds the whole chain implied by the current tags on every
   run and looks for the remote tip inside it. If the tip is not part of that
   chain (tags were added, moved or deleted, or a non-deterministic date mode was
@@ -172,6 +174,8 @@ git-subtree-squash-push --prefix=packages/core --squash-tags -f ../core.git main
 - `--abbrev=7` keeps descriptions stable across clones. Git still lengthens the
   abbreviation if seven characters would be ambiguous inside a given
   repository.
+- Commit messages come from `git describe`, which considers every tag, so a
+  message may name a tag that `--match` excluded from the published chain.
 
 ## Tests
 

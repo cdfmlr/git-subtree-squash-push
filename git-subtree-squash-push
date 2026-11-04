@@ -105,8 +105,9 @@ die() {
 # Parse an identity spec. On success sets IDENT_KIND (keep|current|fixed) and,
 # for fixed, IDENT_NAME / IDENT_EMAIL.
 parse_identity_spec() { # spec
-  local spec=$1
+  local spec
   local re='^(.+) <([^<>[:space:]]+)>$'
+  spec=$(trim_space "$1")
   IDENT_KIND=''
   IDENT_NAME=''
   IDENT_EMAIL=''
@@ -350,7 +351,7 @@ while (($#)); do
     --match=*)
       ((TAG_MATCH_SET == 0)) || die '--match was specified more than once'
       TAG_MATCH_SET=1
-      TAG_MATCH=${1#--match=}
+      TAG_MATCH=$(trim_space "${1#--match=}")
       [[ -n "$TAG_MATCH" ]] || die '--match requires a non-empty pattern'
       shift
       ;;
@@ -560,7 +561,7 @@ case "$MODE" in
     if ((REMOTE_EXISTS && !FORCE)); then
       REMOTE_TREE=$(git rev-parse --verify "${REMOTE_PARENT}^{tree}")
       if [[ "$TREE" == "$REMOTE_TREE" ]]; then
-        printf 'Remote branch already has this snapshot; nothing to push.\n'
+        printf 'Remote branch already has this snapshot (content unchanged); nothing to push.\n'
         exit 0
       fi
       PARENT_ARGS=(-p "$REMOTE_PARENT")
