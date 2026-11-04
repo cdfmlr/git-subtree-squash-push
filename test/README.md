@@ -13,13 +13,13 @@ involved.
 
 ## functional.sh
 
-Covers `--no-squash` (root and subtree), `--squash` (snapshot, `git describe` naming, no-op rerun,
-incremental append, `-f` rebuild), `--squash-tags` (one commit per tag, tag
-ordering, annotated/default tags on the same commit, incremental append,
-detached/inserted tags, empty snapshots before the prefix exists, deterministic
-commit ids across remotes and clones), argument validation, refusal to publish
-a dirty working tree, and `--force-with-lease` protection against a concurrent
-publisher.
+Covers `--no-squash` (root and subtree), `--squash` (snapshot, `git describe`
+naming, no-op rerun, incremental append, `-f` rebuild), `--squash-tags` (one
+commit per tag, tag ordering, `--match` glob filtering, annotated/default tags
+on the same commit, incremental append, detached/inserted tags, empty snapshots
+before the prefix exists, deterministic commit ids across remotes and clones),
+argument validation, refusal to publish a dirty working tree, and
+`--force-with-lease` protection against a concurrent publisher.
 
 Identity options (`--identity` / `--author` / `--committer`) are covered for
 `keep`, `current` and `fixed` values, shorthand conflicts and environment

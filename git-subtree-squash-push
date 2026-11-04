@@ -26,6 +26,8 @@ set -euo pipefail
 PROGRAM=${0##*/}
 MODE=squash
 MODE_SET=0
+TAG_MATCH=''
+TAG_MATCH_SET=0
 PREFIX=''
 FORCE=0
 AUTHOR_SPEC=keep
@@ -56,6 +58,7 @@ Options:
   --squash        Publish the current snapshot as one commit (default)
   --squash-tags   Publish one snapshot commit per reachable tag, in
                   first-parent history order
+  --match=GLOB    Only publish tags matching GLOB (--squash-tags only)
   --no-squash     Publish the full root/subtree history unchanged
   --identity=SPEC Set the author and committer identity (default: keep)
   --author=SPEC   Set the author identity (default: keep)
@@ -87,6 +90,7 @@ By default the current snapshot is published as one squashed commit; use
 --no-squash to publish the root/subtree history unchanged.
 Squashed commits are named with \`git describe --tags --always --long --abbrev=7\`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
+GLOB uses the same patterns as 'git tag -l' and 'git describe --match'.
 --identity conflicts with --author/--committer, and --dates conflicts with
 --author-date/--committer-date. These options only apply to --squash and
 --squash-tags, and changing them changes the generated commit ids.
@@ -308,7 +312,7 @@ prepare_metadata() {
 
 while (($#)); do
   case "$1" in
-    --author|--committer|--identity|--author-date|--committer-date|--dates)
+    --author|--committer|--identity|--author-date|--committer-date|--dates|--match)
       (($# >= 2)) || die "$1 requires a value"
       set -- "$1=$2" "${@:3}"
       ;;
@@ -341,6 +345,13 @@ while (($#)); do
       ((MODE_SET == 0)) || die '--squash, --squash-tags and --no-squash are mutually exclusive'
       MODE=normal
       MODE_SET=1
+      shift
+      ;;
+    --match=*)
+      ((TAG_MATCH_SET == 0)) || die '--match was specified more than once'
+      TAG_MATCH_SET=1
+      TAG_MATCH=${1#--match=}
+      [[ -n "$TAG_MATCH" ]] || die '--match requires a non-empty pattern'
       shift
       ;;
     --identity=*)
@@ -428,6 +439,9 @@ if [[ $MODE == normal ]] &&
   ((IDENTITY_SET || AUTHOR_SET || COMMITTER_SET ||
     DATES_SET || AUTHOR_DATE_SET || COMMITTER_DATE_SET)); then
   die '--identity/--author/--committer/--dates/--author-date/--committer-date only apply to --squash and --squash-tags'
+fi
+if ((TAG_MATCH_SET)) && [[ $MODE != squash-tags ]]; then
+  die '--match only applies to --squash-tags'
 fi
 parse_identity_spec "$AUTHOR_SPEC" || die "invalid author identity: $AUTHOR_SPEC"
 AUTHOR_KIND=$IDENT_KIND
@@ -580,10 +594,19 @@ case "$MODE" in
 
     TAGS=()
     while IFS= read -r tag; do
-      [[ -n "$tag" ]] && TAGS+=("$tag")
+      [[ -n "$tag" ]] || continue
+      if ((TAG_MATCH_SET)) && [[ $tag != $TAG_MATCH ]]; then
+        continue
+      fi
+      TAGS+=("$tag")
     done <<<"$TAG_LIST"
 
-    ((${#TAGS[@]} > 0)) || die 'no tags found on HEAD first-parent history'
+    if ((${#TAGS[@]} == 0)); then
+      if ((TAG_MATCH_SET)); then
+        die "no tags matched --match=$TAG_MATCH on HEAD first-parent history"
+      fi
+      die 'no tags found on HEAD first-parent history'
+    fi
 
     # Rebuild the desired tag chain deterministically on every run. Keeping the
     # source commit's identity and date (the defaults) makes each generated

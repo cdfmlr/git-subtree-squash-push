@@ -531,6 +531,55 @@ test_mode_flags_are_mutually_exclusive() {
     --squash --squash "$remote" main
 }
 
+test_squash_tags_match_filter() {
+  local w repo remote d1 d2 d3
+  w=$(new_tmp squash-tags-match); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
+  printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag w1
+  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v2
+
+  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 v1)
+  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 v2)
+
+  tool_ok 'publish only matching tags' "$repo" --prefix=pkg --squash-tags \
+    --match='v*' "$remote" main
+  assert_eq 'only matching tags become commits' '2' \
+    "$(git --git-dir="$remote" rev-list --count main)"
+  assert_eq 'matching tags keep first-parent order' "$(printf '%s\n%s' "$d2" "$d1")" \
+    "$(git --git-dir="$remote" log --format=%s main)"
+
+  printf 'four\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c4; git -C "$repo" tag w2
+  printf 'five\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c5; git -C "$repo" tag v3
+  d3=$(git -C "$repo" describe --tags --always --long --abbrev=7 v3)
+
+  tool_ok 'append only newly matching tags' "$repo" --prefix=pkg --squash-tags \
+    --match='v*' "$remote" main
+  assert_eq 'one matching commit is appended' '3' \
+    "$(git --git-dir="$remote" rev-list --count main)"
+  assert_eq 'non-matching tags stay out of the chain' \
+    "$(printf '%s\n%s\n%s' "$d3" "$d2" "$d1")" \
+    "$(git --git-dir="$remote" log --format=%s main)"
+
+  tool_fails 'filter that matches nothing' "$repo" --prefix=pkg --squash-tags \
+    --match='nope*' "$remote" other
+  assert_contains 'empty match is reported' "$TOOL_OUTPUT" 'no tags matched'
+
+  tool_fails '--match with --squash' "$repo" --prefix=pkg --squash \
+    --match='v*' "$remote" bad
+  assert_contains 'match requires squash-tags' "$TOOL_OUTPUT" 'only applies to --squash-tags'
+  tool_fails '--match with --no-squash' "$repo" --prefix=pkg --no-squash \
+    --match='v*' "$remote" bad
+  tool_fails 'duplicate --match' "$repo" --prefix=pkg --squash-tags \
+    --match='v*' --match='w*' "$remote" bad
+  assert_contains 'duplicate match is reported' "$TOOL_OUTPUT" 'more than once'
+  tool_fails 'empty --match' "$repo" --prefix=pkg --squash-tags \
+    --match= "$remote" bad
+  assert_contains 'empty pattern is reported' "$TOOL_OUTPUT" 'non-empty pattern'
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -874,6 +923,7 @@ run_case test_prefix_validation
 run_case test_branch_validation
 run_case test_help_text_is_literal
 run_case test_squash_tags_publishes_one_commit_per_tag
+run_case test_squash_tags_match_filter
 run_case test_squash_tags_handles_annotated_and_duplicate_tags
 run_case test_squash_tags_rejects_moved_tags
 run_case test_squash_tags_tag_before_prefix_exists

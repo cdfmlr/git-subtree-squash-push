@@ -35,7 +35,7 @@ root, even when the script is run from a subdirectory; use `.` for the root.
 | Mode | What is published |
 | --- | --- |
 | *(default)* / `--squash` | One snapshot commit for the current committed state. |
-| `--squash-tags` | One snapshot commit per tag on HEAD's first-parent history, in that order. Later runs append only the tags that are not published yet. |
+| `--squash-tags` | One snapshot commit per tag on HEAD's first-parent history, in that order. Later runs append only the tags that are not published yet. Narrow the set with `--match`. |
 | `--no-squash` | The root or subtree history, unchanged. |
 
 | Option | Meaning |
@@ -43,6 +43,7 @@ root, even when the script is run from a subdirectory; use `.` for the root.
 | `--prefix=PATH` | Path relative to the repository root, or `.` for the root. |
 | `--squash` | Publish the current snapshot as one commit (default). |
 | `--squash-tags` | Publish one snapshot commit per reachable tag. |
+| `--match=GLOB` | Only publish tags matching `GLOB` (`--squash-tags` only). |
 | `--no-squash` | Publish the root/subtree history unchanged. |
 | `--identity=SPEC` | Set author **and** committer identity. |
 | `--author=SPEC`, `--committer=SPEC` | Set one side only. |
@@ -50,6 +51,10 @@ root, even when the script is run from a subdirectory; use `.` for the root.
 | `--author-date=SPEC`, `--committer-date=SPEC` | Set one side only. |
 | `-f`, `--force` | Rebuild squashed history from scratch and force-update the branch. With `--no-squash`, force-update with the current history. |
 | `-h`, `--help` | Show usage. |
+
+`GLOB` uses the same pattern language as `git tag -l` and
+`git describe --match`: `--match='v*'` matches every tag whose name starts with
+`v`, and `*` also crosses `/`.
 
 ## Identity and dates
 
@@ -106,6 +111,13 @@ Build a release branch with one commit per tag:
 git-subtree-squash-push --prefix=packages/core --squash-tags ../core.git main
 ```
 
+Only publish `v*` tags, ignoring scratch or nightly tags:
+
+```sh
+git-subtree-squash-push --prefix=packages/core --squash-tags \
+  --match='v*' ../core.git main
+```
+
 Publish under a bot identity with dates spread over a release window:
 
 ```sh
@@ -147,7 +159,9 @@ git-subtree-squash-push --prefix=packages/core --squash-tags -f ../core.git main
 - Running without a mode option publishes one squashed snapshot. Pass
   `--no-squash` to publish the history itself.
 - `--squash-tags` requires at least one tag on the current HEAD's first-parent
-  history; tags on merged side branches are ignored.
+  history; tags on merged side branches are ignored, and `--match` filters the
+  remaining tags before the chain (and any `--dates=START,END` spreading) is
+  built. A pattern that matches nothing is an error.
 - `keep` is the default for identity and dates, so `--squash` is reproducible
   too. A `--squash-tags` branch published by an older version of the tool (or
   with different options) will report a chain mismatch; rebuild it once with
