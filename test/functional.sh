@@ -98,7 +98,7 @@ test_squash_mode() {
 }
 
 test_commit_messages_use_git_describe() {
-  local w repo remote msg
+  local w repo remote msg hash
   w=$(new_tmp describe); repo=$w/repo; remote=$w/remote.git
   init_repo "$repo"; init_remote "$remote"
 
@@ -106,19 +106,29 @@ test_commit_messages_use_git_describe() {
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
 
   tool_ok 'untagged snapshot' "$repo" --prefix=pkg --squash "$remote" main
-  msg=$(git -C "$repo" describe --tags --always --long HEAD)
+  msg=$(git -C "$repo" describe --tags --always --long --abbrev=7 HEAD)
   assert_eq 'untagged snapshot falls back to --always' "$msg" \
     "$(git --git-dir="$remote" log -1 --format=%s main)"
   assert_eq 'fallback is the abbreviated commit id' \
-    "$(git -C "$repo" rev-parse --short HEAD)" "$msg"
+    "$(git -C "$repo" rev-parse --short=7 HEAD)" "$msg"
 
   git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
   tool_ok 'tagged snapshot' "$repo" --prefix=pkg --squash "$remote" main
-  msg=$(git -C "$repo" describe --tags --always --long HEAD)
+  msg=$(git -C "$repo" describe --tags --always --long --abbrev=7 HEAD)
   assert_eq 'tagged snapshot is named with describe' "$msg" \
     "$(git --git-dir="$remote" log -1 --format=%s main)"
   assert_eq 'describe counts commits since the tag' 'v1-1-g' "${msg:0:6}"
+
+  # Repo-level abbreviation settings must not leak into the published name.
+  git -C "$repo" config core.abbrev 12
+  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3
+  tool_ok 'snapshot with a long core.abbrev' "$repo" --prefix=pkg --squash "$remote" main
+  msg=$(git -C "$repo" describe --tags --always --long --abbrev=7 HEAD)
+  assert_eq 'abbrev is pinned to 7' "$msg" \
+    "$(git --git-dir="$remote" log -1 --format=%s main)"
+  hash=${msg##*-g}
+  assert_eq 'hash part is 7 characters' '7' "${#hash}"
 }
 
 test_dirty_worktree_is_refused() {
@@ -202,9 +212,9 @@ test_squash_tags_publishes_one_commit_per_tag() {
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag v2
   printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v3
-  d1=$(git -C "$repo" describe --tags --always --long v1)
-  d2=$(git -C "$repo" describe --tags --always --long v2)
-  d3=$(git -C "$repo" describe --tags --always --long v3)
+  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 v1)
+  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 v2)
+  d3=$(git -C "$repo" describe --tags --always --long --abbrev=7 v3)
 
   tool_ok 'publish tag snapshots' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'one commit per tag' '3' \
@@ -226,7 +236,7 @@ test_squash_tags_publishes_one_commit_per_tag() {
   assert_eq 'tip is unchanged' "$tip" "$(remote_rev "$remote" main)"
 
   printf 'four\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c4; git -C "$repo" tag v4
-  d4=$(git -C "$repo" describe --tags --always --long v4)
+  d4=$(git -C "$repo" describe --tags --always --long --abbrev=7 v4)
   tool_ok 'append a new tag' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'only one commit is appended' '4' \
     "$(git --git-dir="$remote" rev-list --count main)"
@@ -246,8 +256,8 @@ test_squash_tags_handles_annotated_and_duplicate_tags() {
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
   git -C "$repo" tag -a v2 -m 'annotated release two'
   git -C "$repo" tag v2-hotfix
-  d1=$(git -C "$repo" describe --tags --always --long v1)
-  d2=$(git -C "$repo" describe --tags --always --long v2)
+  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 v1)
+  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 v2)
 
   tool_ok 'publish annotated tags' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'annotated tag and lightweight alias both become commits' '3' \

@@ -7,8 +7,10 @@
 #   --squash-tags Publish one snapshot commit per tag on HEAD's first-parent
 #                history; later invocations append only tags not yet published.
 #
-# Every generated commit is named with `git describe --tags --always --long` of
-# its source commit.
+# Every generated commit is named with `git describe --tags --always --long
+# --abbrev=7` of its source commit. Pinning the abbreviation keeps the name (and
+# therefore the synthetic commit id) stable across clones with different object
+# counts.
 #
 # -f rebuilds squashed history from scratch and force-updates the destination
 # branch (using --force-with-lease). In normal mode, it force-updates the
@@ -40,7 +42,7 @@ Options:
   -h, --help      Show this help
 
 Without --squash or --squash-tags, history is not squashed.
-Squashed commits are named with `git describe --tags --always --long`.
+Squashed commits are named with `git describe --tags --always --long --abbrev=7`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
 USAGE
 }
@@ -207,7 +209,8 @@ case "$MODE" in
       PARENT_ARGS=()
     fi
 
-    MESSAGE=$(git describe --tags --always --long HEAD) || die 'could not describe HEAD'
+    MESSAGE=$(git describe --tags --always --long --abbrev=7 HEAD) ||
+      die 'could not describe HEAD'
     # ${arr[@]+"${arr[@]}"} keeps the empty-parent case working under bash 3.2
     # (stock macOS), which treats "${arr[@]}" as unbound under `set -u`.
     RELEASE=$(git commit-tree "$TREE" ${PARENT_ARGS[@]+"${PARENT_ARGS[@]}"} -m "$MESSAGE") ||
@@ -249,7 +252,7 @@ case "$MODE" in
     for TAG in "${TAGS[@]}"; do
       TREE=$(snapshot_tree "refs/tags/$TAG")
       SOURCE_COMMIT=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
-      MESSAGE=$(git describe --tags --always --long "$SOURCE_COMMIT") ||
+      MESSAGE=$(git describe --tags --always --long --abbrev=7 "$SOURCE_COMMIT") ||
         die "could not describe $TAG"
       SOURCE_DATE=$(git show -s --format=%cI "$SOURCE_COMMIT")
       if [[ -n "$PARENT" ]]; then
