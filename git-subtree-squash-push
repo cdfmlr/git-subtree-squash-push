@@ -135,11 +135,12 @@ if [[ -n "$REMOTE_LINE" ]]; then
 fi
 
 # Return the tree snapshot for a commit/tag. For '.' the repository root tree
-# is already the desired snapshot. For a subdirectory, subtree split creates
-# the independent subtree history and we take its root tree.
+# is already the desired snapshot. For a subdirectory, the tree object recorded
+# at that path *is* the snapshot, so no history rewrite (git subtree split) is
+# needed here.
 snapshot_tree() {
   local revision=$1
-  local source_commit object_type split_commit
+  local source_commit object_type
 
   source_commit=$(git rev-parse --verify "${revision}^{commit}") || die "not a commit: $revision"
 
@@ -157,8 +158,7 @@ snapshot_tree() {
   object_type=$(git cat-file -t "$source_commit:$PREFIX") || die "cannot inspect $PREFIX at $revision"
   [[ "$object_type" == tree ]] || die "prefix is not a directory at $revision: $PREFIX"
 
-  split_commit=$(git subtree split --prefix="$PREFIX" "$source_commit") || die "git subtree split failed for $revision"
-  git rev-parse --verify "${split_commit}^{tree}"
+  git rev-parse --verify "$source_commit:$PREFIX"
 }
 
 push_refspec() {
