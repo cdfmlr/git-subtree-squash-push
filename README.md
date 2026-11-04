@@ -8,6 +8,28 @@ The tool is a single dependency-free bash script. It is aimed at the case where
 `git subtree push` is too blunt: you want a curated history, deterministic
 commit ids, and a safe update path instead of a raw force push.
 
+## When to use it
+
+Use it when you need to publish a repository root or a subdirectory as a
+separate Git repository, especially when plain `git subtree push` does not give
+you the history shape you want. Typical cases:
+
+- **Publish a package from a monorepo** to its own repository, without including
+  unrelated files.
+- **Deploy a site or export a component** by pushing just its directory to a
+  deployment or mirror repository.
+- **Keep a compact history**: publish each update as one snapshot commit (the
+  default) instead of exposing the source repository's full history.
+- **Create a release history**: `--squash-tags` makes one snapshot commit per
+  tag, which is handy for a package mirror or release archive.
+- **Preserve history when needed**: `--no-squash` publishes the root or subtree
+  history instead.
+
+The distinguishing feature is control: deterministic snapshot commits, guarded
+updates (a chain check plus `--force-with-lease`) and incremental tag snapshots.
+If `git subtree push` already does what you need, this tool is probably
+unnecessary.
+
 ## Requirements
 
 - `bash` 3.2 or newer (stock `/bin/bash` on macOS works).
@@ -27,8 +49,9 @@ install -m 755 git-subtree-squash-push ~/bin/git-subtree-squash-push
 git-subtree-squash-push --prefix=PATH [--squash | --squash-tags | --no-squash] [-f] REMOTE BRANCH
 ```
 
-`REMOTE` is a remote name or a repository URL, and `BRANCH` is the destination
-branch. `BRANCH` must be a short name (`main`, `release/v1`); a full ref such as
+`REMOTE` is a configured remote name, a repository URL (`https://...`,
+`git@...`) or a local path, and `BRANCH` is the destination branch. `BRANCH`
+must be a short name (`main`, `release/v1`); a full ref such as
 `refs/heads/main` is rejected. `--prefix` is always relative to the repository
 root, even when the script is run from a subdirectory; use `.` for the root.
 
@@ -93,11 +116,25 @@ either order.
 
 ## Examples
 
-Publish the full history of `packages/core` to a separate repository:
+Publish the full history of `packages/core` to a separate repository. `REMOTE`
+can be a local path, a URL, or the name of a configured remote:
 
 ```sh
+# local path, handy while trying things out
 git-subtree-squash-push --prefix=packages/core --no-squash ../core.git main
+
+# HTTPS or SSH URL
+git-subtree-squash-push --prefix=packages/core --no-squash \
+  https://github.com/foo/core.git main
+git-subtree-squash-push --prefix=packages/core --no-squash \
+  git@github.com:foo/core.git main
+
+# named remote, which keeps credentials and settings in git config
+git remote add core https://github.com/foo/core.git
+git-subtree-squash-push --prefix=packages/core --no-squash core main
 ```
+
+The examples below use `../core.git` for brevity; any of the forms above works.
 
 Publish the current state as a single snapshot, then update it later:
 
