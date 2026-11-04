@@ -582,14 +582,21 @@ case "$MODE" in
     # once per commit used to dominate publish time on large repositories.
     # `%(*objectname)` is the peeled commit for annotated tags and empty for
     # lightweight ones, where %(objectname) is the commit already.
+    # Full refnames are used on purpose: %(refname:short) turns into
+    # "tags/<name>" when a branch shares the tag's name, and the resulting
+    # refs/tags/$TAG would then point at refs/tags/tags/<name>.
     TAG_LIST=$(awk '
       NR == FNR { position[$1] = FNR; count = FNR; next }
-      ($2 in position) { tags[position[$2]] = tags[position[$2]] $1 "\n" }
+      {
+        name = $1
+        sub(/^refs\/tags\//, "", name)
+        if ($2 in position) tags[position[$2]] = tags[position[$2]] name "\n"
+      }
       END { for (i = 1; i <= count; i++) if (i in tags) printf "%s", tags[i] }
     ' \
       <(git rev-list --first-parent --reverse HEAD) \
       <(git for-each-ref --sort=refname \
-          --format='%(refname:short) %(*objectname) %(objectname)' refs/tags)
+          --format='%(refname) %(*objectname) %(objectname)' refs/tags)
     ) || die 'could not enumerate tags on HEAD first-parent history'
 
     TAGS=()

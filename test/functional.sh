@@ -580,6 +580,38 @@ test_squash_tags_match_filter() {
   assert_contains 'empty pattern is reported' "$TOOL_OUTPUT" 'non-empty pattern'
 }
 
+test_squash_tags_survives_ambiguous_tag_names() {
+  local w repo remote d1 d2
+  w=$(new_tmp squash-tags-ambiguous); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+  init_remote "$w/root.git"; init_remote "$w/match.git"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
+  git -C "$repo" tag v1
+  git -C "$repo" branch v1
+  printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
+  git -C "$repo" tag v2
+
+  d1=$(git -C "$repo" describe --tags --always --long --abbrev=7 refs/tags/v1)
+  d2=$(git -C "$repo" describe --tags --always --long --abbrev=7 refs/tags/v2)
+
+  tool_ok 'tag sharing a name with a branch' \
+    "$repo" --prefix=pkg --squash-tags "$remote" main
+  assert_eq 'both tags are published' "$(printf '%s\n%s' "$d2" "$d1")" \
+    "$(git --git-dir="$remote" log --format=%s main)"
+
+  tool_ok 'root prefix with a colliding tag' \
+    "$repo" --prefix=. --squash-tags "$w/root.git" main
+  assert_eq 'root prefix publishes both tags' '2' \
+    "$(git --git-dir="$w/root.git" rev-list --count main)"
+
+  tool_ok '--match with a colliding tag' "$repo" --prefix=pkg --squash-tags \
+    --match='v*' "$w/match.git" main
+  assert_eq '--match sees the unambiguous short name' '2' \
+    "$(git --git-dir="$w/match.git" rev-list --count main)"
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -924,6 +956,7 @@ run_case test_branch_validation
 run_case test_help_text_is_literal
 run_case test_squash_tags_publishes_one_commit_per_tag
 run_case test_squash_tags_match_filter
+run_case test_squash_tags_survives_ambiguous_tag_names
 run_case test_squash_tags_handles_annotated_and_duplicate_tags
 run_case test_squash_tags_rejects_moved_tags
 run_case test_squash_tags_tag_before_prefix_exists
