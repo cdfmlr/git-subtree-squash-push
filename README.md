@@ -1,8 +1,8 @@
 # git-subtree-squash-push
 
 Publish the root of a repository, or one directory inside it, to a standalone
-Git repository — with the original history, as a single squashed snapshot, or as
-one snapshot commit per tag.
+Git repository — as a single squashed snapshot (the default), one snapshot
+commit per tag, or with the original history.
 
 The tool is a single dependency-free bash script. It is aimed at the case where
 `git subtree push` is too blunt: you want a curated history, deterministic
@@ -12,8 +12,8 @@ commit ids, and a safe update path instead of a raw force push.
 
 - `bash` 3.2 or newer (stock `/bin/bash` on macOS works).
 - `git` (tested with 2.50).
-- `git subtree` is only needed by the normal mode when `--prefix` points at a
-  subdirectory; `--squash` and `--squash-tags` never invoke it.
+- `git subtree` is only needed by `--no-squash` when `--prefix` points at a
+  subdirectory; the squashed modes never invoke it.
 
 ## Install
 
@@ -24,7 +24,7 @@ install -m 755 git-subtree-squash-push ~/bin/git-subtree-squash-push
 ## Usage
 
 ```
-git-subtree-squash-push --prefix=PATH [--squash | --squash-tags] [-f] REMOTE BRANCH
+git-subtree-squash-push --prefix=PATH [--squash | --squash-tags | --no-squash] [-f] REMOTE BRANCH
 ```
 
 `REMOTE` is a remote name or a repository URL, and `BRANCH` is the destination
@@ -34,20 +34,21 @@ root, even when the script is run from a subdirectory; use `.` for the root.
 
 | Mode | What is published |
 | --- | --- |
-| *(default)* | The root or subtree history, unchanged. |
-| `--squash` | One snapshot commit for the current working tree state (committed content only). |
+| *(default)* / `--squash` | One snapshot commit for the current committed state. |
 | `--squash-tags` | One snapshot commit per tag on HEAD's first-parent history, in that order. Later runs append only the tags that are not published yet. |
+| `--no-squash` | The root or subtree history, unchanged. |
 
 | Option | Meaning |
 | --- | --- |
 | `--prefix=PATH` | Path relative to the repository root, or `.` for the root. |
-| `--squash` | Publish the current snapshot as one commit. |
+| `--squash` | Publish the current snapshot as one commit (default). |
 | `--squash-tags` | Publish one snapshot commit per reachable tag. |
+| `--no-squash` | Publish the root/subtree history unchanged. |
 | `--identity=SPEC` | Set author **and** committer identity. |
 | `--author=SPEC`, `--committer=SPEC` | Set one side only. |
 | `--dates=SPEC` | Set author **and** committer date. |
 | `--author-date=SPEC`, `--committer-date=SPEC` | Set one side only. |
-| `-f`, `--force` | Rebuild squashed history from scratch and force-update the branch. In normal mode, force-update with the current history. |
+| `-f`, `--force` | Rebuild squashed history from scratch and force-update the branch. With `--no-squash`, force-update with the current history. |
 | `-h`, `--help` | Show usage. |
 
 ## Identity and dates
@@ -90,7 +91,7 @@ either order.
 Publish the full history of `packages/core` to a separate repository:
 
 ```sh
-git-subtree-squash-push --prefix=packages/core ../core.git main
+git-subtree-squash-push --prefix=packages/core --no-squash ../core.git main
 ```
 
 Publish the current state as a single snapshot, then update it later:
@@ -124,7 +125,7 @@ git-subtree-squash-push --prefix=packages/core --squash-tags -f ../core.git main
 
 - Publishing is based on committed content only. The script refuses to run when
   the working tree is dirty (staged, unstaged or untracked files).
-- Normal mode exports the subtree with `git subtree split` (or `HEAD` for the
+- `--no-squash` exports the subtree with `git subtree split` (or `HEAD` for the
   repository root) and pushes that commit.
 - `--squash` compares the current snapshot tree with the remote tip. If they
   match it does nothing (unless `-f` is given); otherwise it commits the
@@ -143,6 +144,8 @@ git-subtree-squash-push --prefix=packages/core --squash-tags -f ../core.git main
 
 ## Notes
 
+- Running without a mode option publishes one squashed snapshot. Pass
+  `--no-squash` to publish the history itself.
 - `--squash-tags` requires at least one tag on the current HEAD's first-parent
   history; tags on merged side branches are ignored.
 - `keep` is the default for identity and dates, so `--squash` is reproducible

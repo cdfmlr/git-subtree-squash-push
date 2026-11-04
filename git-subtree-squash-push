@@ -2,8 +2,9 @@
 # Publish a repository root or subtree to a standalone Git repository.
 #
 # Modes:
-#   (default)    Publish normal, unsquashed history.
-#   --squash     Publish one snapshot commit per invocation.
+#   (default)    Publish the current snapshot as one squashed commit.
+#   --squash     Same as the default, for explicit invocations.
+#   --no-squash  Publish the full root/subtree history unchanged.
 #   --squash-tags Publish one snapshot commit per tag on HEAD's first-parent
 #                history; later invocations append only tags not yet published.
 #
@@ -23,7 +24,8 @@
 set -euo pipefail
 
 PROGRAM=${0##*/}
-MODE=normal
+MODE=squash
+MODE_SET=0
 PREFIX=''
 FORCE=0
 AUTHOR_SPEC=keep
@@ -42,7 +44,8 @@ DATES_SET=0
 usage() {
   cat <<USAGE
 Usage:
-  $PROGRAM --prefix=PATH [--squash | --squash-tags] [-f] REMOTE BRANCH
+  $PROGRAM --prefix=PATH [--squash | --squash-tags | --no-squash] [-f]
+           REMOTE BRANCH
 
 Arguments:
   REMOTE   Git remote name or repository URL
@@ -50,9 +53,10 @@ Arguments:
 
 Options:
   --prefix=PATH   Path relative to the repository root, or '.' for the root
-  --squash        Publish the current snapshot as one commit
+  --squash        Publish the current snapshot as one commit (default)
   --squash-tags   Publish one snapshot commit per reachable tag, in
                   first-parent history order
+  --no-squash     Publish the full root/subtree history unchanged
   --identity=SPEC Set the author and committer identity (default: keep)
   --author=SPEC   Set the author identity (default: keep)
   --committer=SPEC
@@ -79,7 +83,8 @@ Date SPEC:
                        endpoints included; a single commit uses START
 
 ISO8601 requires a timezone: YYYY-MM-DD[T ]HH:MM:SS(+|-)HH:MM or ...Z.
-Without --squash or --squash-tags, history is not squashed.
+By default the current snapshot is published as one squashed commit; use
+--no-squash to publish the root/subtree history unchanged.
 Squashed commits are named with \`git describe --tags --always --long --abbrev=7\`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
 --identity conflicts with --author/--committer, and --dates conflicts with
@@ -321,13 +326,21 @@ while (($#)); do
       shift 2
       ;;
     --squash)
-      [[ "$MODE" == normal ]] || die '--squash and --squash-tags are mutually exclusive'
+      ((MODE_SET == 0)) || die '--squash, --squash-tags and --no-squash are mutually exclusive'
       MODE=squash
+      MODE_SET=1
       shift
       ;;
     --squash-tags)
-      [[ "$MODE" == normal ]] || die '--squash and --squash-tags are mutually exclusive'
+      ((MODE_SET == 0)) || die '--squash, --squash-tags and --no-squash are mutually exclusive'
       MODE=squash-tags
+      MODE_SET=1
+      shift
+      ;;
+    --no-squash)
+      ((MODE_SET == 0)) || die '--squash, --squash-tags and --no-squash are mutually exclusive'
+      MODE=normal
+      MODE_SET=1
       shift
       ;;
     --identity=*)

@@ -29,7 +29,7 @@ test_normal_mode_root() {
   printf 'a\n' >"$repo/a.txt"; commit_all "$repo" one
   printf 'b\n' >"$repo/b.txt"; commit_all "$repo" two
 
-  tool_ok 'normal root push' "$repo" --prefix=. "$remote" main
+  tool_ok 'normal root push' "$repo" --prefix=. --no-squash "$remote" main
   assert_eq 'remote branch is HEAD' \
     "$(git -C "$repo" rev-parse HEAD)" "$(remote_rev "$remote" main)"
   assert_eq 'full history is published' '2' \
@@ -48,7 +48,7 @@ test_normal_mode_subtree() {
   printf 'b\n' >>"$repo/pkg/a.txt"
   commit_all "$repo" two
 
-  tool_ok 'normal subtree push' "$repo" --prefix=pkg "$remote" main
+  tool_ok 'normal subtree push' "$repo" --prefix=pkg --no-squash "$remote" main
   tip=$(remote_rev "$remote" main)
   assert_eq 'tip publishes the subtree tree' \
     "$(git -C "$repo" rev-parse 'HEAD:pkg')" \
@@ -242,7 +242,7 @@ test_identity_validation() {
   assert_contains 'bad committer is reported' "$TOOL_OUTPUT" 'invalid committer identity'
   tool_fails 'identity option without a value' "$repo" --prefix=pkg --squash --author
   assert_contains 'missing value is reported' "$TOOL_OUTPUT" 'requires a value'
-  tool_fails 'identity in normal mode' "$repo" --prefix=pkg \
+  tool_fails 'identity with --no-squash' "$repo" --prefix=pkg --no-squash \
     --identity='X <x@example.com>' "$remote" main
   assert_contains 'normal mode rejects identity options' "$TOOL_OUTPUT" 'only apply to --squash'
 }
@@ -428,7 +428,7 @@ test_dates_shorthand_and_validation() {
   tool_fails 'duplicate --dates' "$repo" --prefix=pkg --squash \
     --dates=keep --dates=current "$remote" bad
   assert_contains 'duplicate date option is reported' "$TOOL_OUTPUT" 'more than once'
-  tool_fails 'date option in normal mode' "$repo" --prefix=pkg \
+  tool_fails 'date option with --no-squash' "$repo" --prefix=pkg --no-squash \
     --dates=keep "$remote" main
   assert_contains 'normal mode rejects date options' "$TOOL_OUTPUT" 'only apply to --squash'
 }
@@ -483,6 +483,52 @@ test_help_text_is_literal() {
   assert_contains 'help is not empty' "$out" 'Usage:'
   assert_contains 'help shows the naming command literally' "$out" \
     'named with `git describe --tags --always --long --abbrev=7`'
+}
+
+test_default_mode_is_squash() {
+  local w repo remote
+  w=$(new_tmp default-squash); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"; init_remote "$w/full.git"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
+  printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
+  printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3
+
+  tool_ok 'no mode option means squash' "$repo" --prefix=pkg "$remote" main
+  assert_eq 'default publishes a single snapshot' '1' \
+    "$(git --git-dir="$remote" rev-list --count main)"
+  assert_eq 'default snapshot has the prefix tree' \
+    "$(git -C "$repo" rev-parse 'HEAD:pkg')" \
+    "$(git --git-dir="$remote" rev-parse 'main^{tree}')"
+
+  tool_ok '--no-squash publishes history' \
+    "$repo" --prefix=pkg --no-squash "$w/full.git" main
+  assert_eq '--no-squash keeps the full history' '3' \
+    "$(git --git-dir="$w/full.git" rev-list --count main)"
+}
+
+test_mode_flags_are_mutually_exclusive() {
+  local w repo remote
+  w=$(new_tmp mode-flags); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
+
+  tool_fails '--squash with --no-squash' "$repo" --prefix=pkg \
+    --squash --no-squash "$remote" main
+  assert_contains 'conflict is reported' "$TOOL_OUTPUT" 'mutually exclusive'
+  tool_fails '--no-squash with --squash' "$repo" --prefix=pkg \
+    --no-squash --squash "$remote" main
+  tool_fails '--squash-tags with --no-squash' "$repo" --prefix=pkg \
+    --squash-tags --no-squash "$remote" main
+  tool_fails '--no-squash with --squash-tags' "$repo" --prefix=pkg \
+    --no-squash --squash-tags "$remote" main
+  tool_fails '--squash-tags with --squash' "$repo" --prefix=pkg \
+    --squash-tags --squash "$remote" main
+  tool_fails 'duplicate --squash' "$repo" --prefix=pkg \
+    --squash --squash "$remote" main
 }
 
 test_dirty_worktree_is_refused() {
@@ -550,7 +596,7 @@ test_branch_validation() {
   assert_contains 'invalid branch name is reported' "$TOOL_OUTPUT" 'invalid branch name'
 
   tool_ok 'slash separated branch names still work' \
-    "$repo" --prefix=. "$remote" release/v1
+    "$repo" --prefix=. --no-squash "$remote" release/v1
   assert_eq 'nested-but-valid branch is created' '1' \
     "$(git --git-dir="$remote" rev-list --count release/v1)"
 }
@@ -781,7 +827,7 @@ test_squash_modes_do_not_need_git_subtree() {
   # Normal mode still rewrites history, which is what git subtree provides.
   init_remote "$w/normal.git"
   if out=$(cd "$repo" && PATH="$HERE/bin:$PATH" REAL_GIT="$REAL_GIT" \
-      GIT_FORBID=subtree "$TOOL" --prefix=pkg "$w/normal.git" main 2>&1); then
+      GIT_FORBID=subtree "$TOOL" --prefix=pkg --no-squash "$w/normal.git" main 2>&1); then
     fail 'normal subtree mode is expected to use git subtree'
   fi
   assert_contains 'normal mode reports the subtree failure' "$out" 'git subtree split failed'
@@ -808,6 +854,8 @@ test_runs_under_system_bash() {
 
 info 'functional tests'
 run_case test_normal_mode_root
+run_case test_default_mode_is_squash
+run_case test_mode_flags_are_mutually_exclusive
 run_case test_normal_mode_subtree
 run_case test_squash_mode
 run_case test_commit_messages_use_git_describe
