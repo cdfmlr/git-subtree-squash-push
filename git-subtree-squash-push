@@ -212,12 +212,25 @@ case "$MODE" in
     ;;
 
   squash-tags)
+    # List the tags in first-parent history order. Joining a single commit walk
+    # with a single ref listing keeps this O(history + tags); running `git tag`
+    # once per commit used to dominate publish time on large repositories.
+    # `%(*objectname)` is the peeled commit for annotated tags and empty for
+    # lightweight ones, where %(objectname) is the commit already.
+    TAG_LIST=$(awk '
+      NR == FNR { position[$1] = FNR; count = FNR; next }
+      ($2 in position) { tags[position[$2]] = tags[position[$2]] $1 "\n" }
+      END { for (i = 1; i <= count; i++) if (i in tags) printf "%s", tags[i] }
+    ' \
+      <(git rev-list --first-parent --reverse HEAD) \
+      <(git for-each-ref --sort=refname \
+          --format='%(refname:short) %(*objectname) %(objectname)' refs/tags)
+    ) || die 'could not enumerate tags on HEAD first-parent history'
+
     TAGS=()
-    while IFS= read -r commit; do
-      while IFS= read -r tag; do
-        [[ -n "$tag" ]] && TAGS+=("$tag")
-      done < <(git tag --points-at "$commit" --sort=refname)
-    done < <(git rev-list --first-parent --reverse HEAD)
+    while IFS= read -r tag; do
+      [[ -n "$tag" ]] && TAGS+=("$tag")
+    done <<<"$TAG_LIST"
 
     ((${#TAGS[@]} > 0)) || die 'no tags found on HEAD first-parent history'
 
