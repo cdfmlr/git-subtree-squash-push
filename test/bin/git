@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Test-only git proxy.
+#
+# Tests prepend this directory to PATH so they can observe and shape the git
+# commands issued by the script under test. REAL_GIT must point at the real
+# git executable (resolved before the proxy was added to PATH).
+#
+#   GIT_CALL_LOG            append one line per invocation
+#   GIT_FORBID              subcommand that must fail when used
+#   GIT_BEFORE_PUSH         command to run once right before the first push
+#   GIT_BEFORE_PUSH_MARKER  marker file recording that the hook already ran
+set -uo pipefail
+
+real_git=${REAL_GIT:?REAL_GIT must point at the real git executable}
+
+sub=''
+args=("$@")
+i=0
+while (( i < ${#args[@]} )); do
+  case ${args[i]} in
+    -C|-c) i=$((i + 2)) ;;
+    -*) i=$((i + 1)) ;;
+    *) sub=${args[i]} ; break ;;
+  esac
+done
+
+if [[ -n ${GIT_CALL_LOG:-} ]]; then
+  printf '%s\n' "$*" >>"$GIT_CALL_LOG"
+fi
+
+if [[ -n ${GIT_FORBID:-} && $sub == "$GIT_FORBID" ]]; then
+  printf 'test git proxy: subcommand "%s" is forbidden in this test\n' "$sub" >&2
+  exit 1
+fi
+
+if [[ -n ${GIT_BEFORE_PUSH:-} && $sub == push && ! -e ${GIT_BEFORE_PUSH_MARKER} ]]; then
+  : >"${GIT_BEFORE_PUSH_MARKER}"
+  "$GIT_BEFORE_PUSH" || exit 1
+fi
+
+exec "$real_git" "$@"
