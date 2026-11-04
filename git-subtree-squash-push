@@ -163,38 +163,53 @@ iso_to_epoch() { # YYYY-MM-DD[T ]HH:MM:SS(±HH:MM|±HHMM|Z)
     "$(( days * 86400 + hh * 3600 + mi * 60 + ss - off_sec ))" "$off_str"
 }
 
+trim_space() { # value -> value without surrounding blanks
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  s=${s%"${s##*[![:space:]]}"}
+  printf '%s' "$s"
+}
+
 # Parse a date spec. Sets DATE_KIND and, depending on the kind, DATE_VALUE
-# (fixed) or DATE_START/DATE_END/DATE_OFFSET (evenly).
+# (fixed) or DATE_START/DATE_END/DATE_OFFSET (evenly). "fixed," and "evenly,"
+# are optional; a bare START,END is treated as an evenly range.
 parse_date_spec() { # spec
-  local spec=$1 pair start end
+  local spec kind pair start end
   DATE_KIND=''
   DATE_VALUE=''
   DATE_START=''
   DATE_END=''
   DATE_OFFSET=''
+  spec=$(trim_space "$1")
   case $spec in
     keep|current)
       DATE_KIND=$spec
       return 0
       ;;
     evenly,*)
-      spec=${spec#evenly,}
-      [[ $spec == *,* ]] || return 1
-      start=${spec%%,*}
-      end=${spec#*,}
-      [[ $end != *,* ]] || return 1
-      pair=$(iso_to_epoch "$start") || return 1
-      DATE_START=${pair% *}
-      DATE_OFFSET=${pair#* }
-      pair=$(iso_to_epoch "$end") || return 1
-      DATE_END=${pair% *}
-      DATE_KIND=evenly
-      return 0
+      kind=evenly
+      spec=$(trim_space "${spec#evenly,}")
       ;;
     fixed,*)
-      spec=${spec#fixed,}
+      kind=fixed
+      spec=$(trim_space "${spec#fixed,}")
       ;;
+    *,*) kind=evenly ;;
+    *) kind=fixed ;;
   esac
+  if [[ $kind == evenly ]]; then
+    [[ $spec == *,* ]] || return 1
+    start=$(trim_space "${spec%%,*}")
+    end=$(trim_space "${spec#*,}")
+    [[ $end != *,* ]] || return 1
+    pair=$(iso_to_epoch "$start") || return 1
+    DATE_START=${pair% *}
+    DATE_OFFSET=${pair#* }
+    pair=$(iso_to_epoch "$end") || return 1
+    DATE_END=${pair% *}
+    DATE_KIND=evenly
+    return 0
+  fi
   # Let git parse fixed timestamps; it rejects malformed input on its own.
   [[ $spec =~ $ISO8601_RE ]] || return 1
   DATE_KIND=fixed

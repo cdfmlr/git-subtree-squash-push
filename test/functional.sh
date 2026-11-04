@@ -375,6 +375,13 @@ test_dates_evenly() {
   assert_eq 'evenly chain is reproducible across remotes' \
     "$(remote_rev "$remote" main)" "$(remote_rev "$w/two.git" main)"
 
+  init_remote "$w/three.git"
+  tool_ok 'bare START,END is an evenly range' "$repo" --prefix=pkg --squash-tags \
+    --committer-date='2020-01-01T00:00:00+08:00, 2020-01-04T00:00:00+08:00' \
+    "$w/three.git" main
+  assert_eq 'bare range matches the evenly prefix' \
+    "$(remote_rev "$remote" main)" "$(remote_rev "$w/three.git" main)"
+
   tool_ok 'single commit uses START' "$repo" --prefix=pkg --squash \
     --dates='evenly,2020-01-01T00:00:00+08:00,2020-01-04T00:00:00+08:00' \
     "$w/one.git" main
@@ -414,6 +421,10 @@ test_dates_shorthand_and_validation() {
     --committer-date='evenly,2020-01-01T00:00:00+08:00,2020-01-02T00:00:00+08:00,2020-01-03T00:00:00+08:00' \
     "$remote" bad
   assert_contains 'evenly arity is reported twice' "$TOOL_OUTPUT" 'invalid committer date'
+  tool_fails 'bare range with three dates' "$repo" --prefix=pkg --squash \
+    --committer-date='2020-01-01T00:00:00+08:00,2020-01-02T00:00:00+08:00,2020-01-03T00:00:00+08:00' \
+    "$remote" bad
+  assert_contains 'bare range arity is reported' "$TOOL_OUTPUT" 'invalid committer date'
   tool_fails 'duplicate --dates' "$repo" --prefix=pkg --squash \
     --dates=keep --dates=current "$remote" bad
   assert_contains 'duplicate date option is reported' "$TOOL_OUTPUT" 'more than once'
