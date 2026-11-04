@@ -13,7 +13,7 @@ involved.
 
 ## functional.sh
 
-Covers normal mode (root and subtree), `--squash` (snapshot, no-op rerun,
+Covers normal mode (root and subtree), `--squash` (snapshot, `git describe` naming, no-op rerun,
 incremental append, `-f` rebuild), `--squash-tags` (one commit per tag, tag
 ordering, annotated/default tags on the same commit, incremental append,
 detached/inserted tags, empty snapshots before the prefix exists, deterministic

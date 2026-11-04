@@ -7,6 +7,9 @@
 #   --squash-tags Publish one snapshot commit per tag on HEAD's first-parent
 #                history; later invocations append only tags not yet published.
 #
+# Every generated commit is named with `git describe --tags --always --long` of
+# its source commit.
+#
 # -f rebuilds squashed history from scratch and force-updates the destination
 # branch (using --force-with-lease). In normal mode, it force-updates the
 # branch with the current root/subtree history.
@@ -31,12 +34,13 @@ Options:
   --prefix=PATH   Path relative to the repository root, or '.' for the root
   --squash        Publish the current snapshot as one commit
   --squash-tags   Publish one snapshot commit per reachable tag, in
-                  first-parent history order; each commit message is its tag
+                  first-parent history order
   -f, --force     Rebuild squashed history from scratch and force-update the
                   remote branch; in normal mode, force-update the branch
   -h, --help      Show this help
 
 Without --squash or --squash-tags, history is not squashed.
+Squashed commits are named with `git describe --tags --always --long`.
 For --squash-tags, tags must be on the current HEAD's first-parent history.
 USAGE
 }
@@ -203,12 +207,7 @@ case "$MODE" in
       PARENT_ARGS=()
     fi
 
-    SOURCE_SHORT=$(git rev-parse --short HEAD)
-    if [[ "$PREFIX" == '.' ]]; then
-      MESSAGE="squash snapshot at $SOURCE_SHORT"
-    else
-      MESSAGE="squash snapshot of $PREFIX at $SOURCE_SHORT"
-    fi
+    MESSAGE=$(git describe --tags --always --long HEAD) || die 'could not describe HEAD'
     # ${arr[@]+"${arr[@]}"} keeps the empty-parent case working under bash 3.2
     # (stock macOS), which treats "${arr[@]}" as unbound under `set -u`.
     RELEASE=$(git commit-tree "$TREE" ${PARENT_ARGS[@]+"${PARENT_ARGS[@]}"} -m "$MESSAGE") ||
@@ -250,11 +249,13 @@ case "$MODE" in
     for TAG in "${TAGS[@]}"; do
       TREE=$(snapshot_tree "refs/tags/$TAG")
       SOURCE_COMMIT=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+      MESSAGE=$(git describe --tags --always --long "$SOURCE_COMMIT") ||
+        die "could not describe $TAG"
       SOURCE_DATE=$(git show -s --format=%cI "$SOURCE_COMMIT")
       if [[ -n "$PARENT" ]]; then
-        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -p "$PARENT" -m "$TAG") || die "could not create release commit for tag $TAG"
+        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -p "$PARENT" -m "$MESSAGE") || die "could not create release commit for tag $TAG"
       else
-        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -m "$TAG") || die "could not create release commit for tag $TAG"
+        RELEASE=$(GIT_AUTHOR_NAME='Git Subtree Squash Push' GIT_AUTHOR_EMAIL='git-subtree-squash-push@localhost' GIT_AUTHOR_DATE="$SOURCE_DATE" GIT_COMMITTER_NAME='Git Subtree Squash Push' GIT_COMMITTER_EMAIL='git-subtree-squash-push@localhost' GIT_COMMITTER_DATE="$SOURCE_DATE" git -c commit.gpgsign=false commit-tree "$TREE" -m "$MESSAGE") || die "could not create release commit for tag $TAG"
       fi
       TAG_COMMITS+=("$RELEASE")
       PARENT=$RELEASE

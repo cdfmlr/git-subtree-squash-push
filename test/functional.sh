@@ -97,6 +97,30 @@ test_squash_mode() {
     "$(git --git-dir="$remote" rev-list --count main)"
 }
 
+test_commit_messages_use_git_describe() {
+  local w repo remote msg
+  w=$(new_tmp describe); repo=$w/repo; remote=$w/remote.git
+  init_repo "$repo"; init_remote "$remote"
+
+  mkdir -p "$repo/pkg"
+  printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1
+
+  tool_ok 'untagged snapshot' "$repo" --prefix=pkg --squash "$remote" main
+  msg=$(git -C "$repo" describe --tags --always --long HEAD)
+  assert_eq 'untagged snapshot falls back to --always' "$msg" \
+    "$(git --git-dir="$remote" log -1 --format=%s main)"
+  assert_eq 'fallback is the abbreviated commit id' \
+    "$(git -C "$repo" rev-parse --short HEAD)" "$msg"
+
+  git -C "$repo" tag v1
+  printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
+  tool_ok 'tagged snapshot' "$repo" --prefix=pkg --squash "$remote" main
+  msg=$(git -C "$repo" describe --tags --always --long HEAD)
+  assert_eq 'tagged snapshot is named with describe' "$msg" \
+    "$(git --git-dir="$remote" log -1 --format=%s main)"
+  assert_eq 'describe counts commits since the tag' 'v1-1-g' "${msg:0:6}"
+}
+
 test_dirty_worktree_is_refused() {
   local w repo remote
   w=$(new_tmp dirty); repo=$w/repo; remote=$w/remote.git
@@ -170,7 +194,7 @@ test_branch_validation() {
 # --- --squash-tags ----------------------------------------------------------
 
 test_squash_tags_publishes_one_commit_per_tag() {
-  local w repo remote tip mid
+  local w repo remote tip mid d1 d2 d3 d4
   w=$(new_tmp squash-tags); repo=$w/repo; remote=$w/remote.git
   init_repo "$repo"; init_remote "$remote"
 
@@ -178,11 +202,14 @@ test_squash_tags_publishes_one_commit_per_tag() {
   printf 'one\n' >"$repo/pkg/data.txt"; commit_all "$repo" c1; git -C "$repo" tag v1
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2; git -C "$repo" tag v2
   printf 'three\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c3; git -C "$repo" tag v3
+  d1=$(git -C "$repo" describe --tags --always --long v1)
+  d2=$(git -C "$repo" describe --tags --always --long v2)
+  d3=$(git -C "$repo" describe --tags --always --long v3)
 
   tool_ok 'publish tag snapshots' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'one commit per tag' '3' \
     "$(git --git-dir="$remote" rev-list --count main)"
-  assert_eq 'commit messages are tag names' "$(printf 'v3\nv2\nv1')" \
+  assert_eq 'commit messages are describe names' "$(printf '%s\n%s\n%s' "$d3" "$d2" "$d1")" \
     "$(git --git-dir="$remote" log --format=%s main)"
 
   tip=$(remote_rev "$remote" main)
@@ -199,17 +226,18 @@ test_squash_tags_publishes_one_commit_per_tag() {
   assert_eq 'tip is unchanged' "$tip" "$(remote_rev "$remote" main)"
 
   printf 'four\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c4; git -C "$repo" tag v4
+  d4=$(git -C "$repo" describe --tags --always --long v4)
   tool_ok 'append a new tag' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'only one commit is appended' '4' \
     "$(git --git-dir="$remote" rev-list --count main)"
   assert_eq 'new commit builds on the previous tip' "$tip" \
     "$(git --git-dir="$remote" rev-parse main^)"
-  assert_eq 'new tip is the last tag' 'v4' \
+  assert_eq 'new tip is named after the last tag' "$d4" \
     "$(git --git-dir="$remote" log -1 --format=%s main)"
 }
 
 test_squash_tags_handles_annotated_and_duplicate_tags() {
-  local w repo remote
+  local w repo remote d1 d2
   w=$(new_tmp squash-tags-annotated); repo=$w/repo; remote=$w/remote.git
   init_repo "$repo"; init_remote "$remote"
 
@@ -218,11 +246,14 @@ test_squash_tags_handles_annotated_and_duplicate_tags() {
   printf 'two\n' >>"$repo/pkg/data.txt"; commit_all "$repo" c2
   git -C "$repo" tag -a v2 -m 'annotated release two'
   git -C "$repo" tag v2-hotfix
+  d1=$(git -C "$repo" describe --tags --always --long v1)
+  d2=$(git -C "$repo" describe --tags --always --long v2)
 
   tool_ok 'publish annotated tags' "$repo" --prefix=pkg --squash-tags "$remote" main
   assert_eq 'annotated tag and lightweight alias both become commits' '3' \
     "$(git --git-dir="$remote" rev-list --count main)"
-  assert_eq 'tags on one commit keep refname order' "$(printf 'v2-hotfix\nv2\nv1')" \
+  assert_eq 'tags on one commit share the describe name' \
+    "$(printf '%s\n%s\n%s' "$d2" "$d2" "$d1")" \
     "$(git --git-dir="$remote" log --format=%s main)"
   assert_eq 'annotated tag publishes its peeled commit tree' \
     "$(git -C "$repo" rev-parse 'v2^{commit}:pkg')" \
@@ -405,6 +436,7 @@ info 'functional tests'
 run_case test_normal_mode_root
 run_case test_normal_mode_subtree
 run_case test_squash_mode
+run_case test_commit_messages_use_git_describe
 run_case test_dirty_worktree_is_refused
 run_case test_prefix_validation
 run_case test_branch_validation
