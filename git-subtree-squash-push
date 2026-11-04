@@ -25,7 +25,7 @@ Usage:
 
 Arguments:
   REMOTE   Git remote name or repository URL
-  BRANCH   Destination branch name in REMOTE
+  BRANCH   Destination branch name in REMOTE (a short name, e.g. "main")
 
 Options:
   --prefix=PATH   Path relative to the repository root, or '.' for the root
@@ -96,6 +96,9 @@ REMOTE=$1
 BRANCH=$2
 [[ -n "$REMOTE" ]] || die 'REMOTE must not be empty'
 [[ -n "$BRANCH" ]] || die 'BRANCH must not be empty'
+# The destination is always refs/heads/$BRANCH. A full ref would be pushed to
+# refs/heads/refs/heads/... instead of the branch the user meant.
+[[ "$BRANCH" != refs/* ]] || die "BRANCH must be a branch name, not a ref: $BRANCH"
 git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || die "invalid branch name: $BRANCH"
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || die 'not inside a Git working tree'
